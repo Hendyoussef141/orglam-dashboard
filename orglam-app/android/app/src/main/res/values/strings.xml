@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Orglam</string>
+    <string name="title_activity_main">Orglam</string>
+    <string name="package_name">com.orglam.app</string>
+    <string name="custom_url_scheme">com.orglam.app</string>
+</resources>

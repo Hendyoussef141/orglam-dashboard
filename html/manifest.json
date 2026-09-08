@@ -1,0 +1,15 @@
+{
+  "name": "Orglam Dashboard",
+  "short_name": "Orglam",
+  "start_url": "./Orglam Dashboard.html",
+  "display": "standalone",
+  "background_color": "#869076",
+  "theme_color": "#869076",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icon.jpg", "sizes": "192x192", "type": "image/jpeg", "purpose": "any" },
+    { "src": "icon.jpg", "sizes": "512x512", "type": "image/jpeg", "purpose": "any" },
+    { "src": "icon.jpg", "sizes": "192x192", "type": "image/jpeg", "purpose": "maskable" },
+    { "src": "icon.jpg", "sizes": "512x512", "type": "image/jpeg", "purpose": "maskable" }
+  ]
+}

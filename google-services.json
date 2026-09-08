@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "712395962562",
+    "project_id": "orglam",
+    "storage_bucket": "orglam.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:712395962562:android:51fa8e44031e6510ce635b",
+        "android_client_info": {
+          "package_name": "com.orglam.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAmPYiRYQgai4B0sb4C9h6-Ey63KTSjCBA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

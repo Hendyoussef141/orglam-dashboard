@@ -1,0 +1,4 @@
+D:
+cd "D:\downloads\orglam dashboard\orglam-app"
+npx cap copy android
+https://dawn-king-6cc3.orglam-service.workers.dev/kv-usage

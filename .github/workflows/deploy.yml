@@ -1,0 +1,87 @@
+name: Deploy
+
+# Every push to main deploys everything: the worker, the dashboard bundled into it, and a fresh
+# signed Android build published to all the phones.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  worker:
+    name: Cloudflare Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # wrangler expects the entrypoint named in wrangler.toml (main = "worker.js"), but the file
+      # is kept under its readable name in the repo.
+      - name: Stage the worker entrypoint
+        run: cp "Orglam Worker.js" worker.js
+
+      - name: Inject the KV namespace id
+        run: |
+          sed -i "s/PASTE_YOUR_KV_NAMESPACE_ID/${{ secrets.KV_NAMESPACE_ID }}/" wrangler.toml
+
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  android:
+    name: Android build + publish
+    runs-on: ubuntu-latest
+    # Never publishes an APK the worker deploy hasn't accepted first.
+    needs: worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'   # Gradle 8 needs 17-24; 25 fails with "class file major version 69"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The version number must be a real, rising integer compiled INTO the apk - the phones compare
+      # it against their own installed versionCode. The run number gives that for free and never
+      # repeats.
+      - name: Set the version number
+        id: ver
+        run: |
+          VER=$(( ${{ github.run_number }} + 100 ))
+          echo "code=$VER" >> $GITHUB_OUTPUT
+          sed -i -E "s/versionCode +[0-9]+/versionCode $VER/" orglam-app/android/app/build.gradle
+          sed -i -E "s/versionName +\"[^\"]*\"/versionName \"$VER.0\"/" orglam-app/android/app/build.gradle
+
+      - name: Copy the dashboard into the app
+        run: |
+          cp "Orglam Dashboard.html" orglam-app/www/
+          cp sw.js manifest.json orglam-app/www/ 2>/dev/null || true
+          cd orglam-app
+          npm ci || npm install
+          npx cap copy android
+
+      # The same keystore the installed app was signed with, stored as a base64 secret - a build
+      # signed with a different key cannot install over what is already on people's phones.
+      - name: Restore the signing keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > orglam-app/android/app/release.jks
+
+      - name: Build the release APK
+        working-directory: orglam-app/android
+        env:
+          ORGLAM_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ORGLAM_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ORGLAM_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Publish to every phone
+        run: |
+          APK=$(find orglam-app/android/app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Publishing $APK as version ${{ steps.ver.outputs.code }}"
+          curl -f -X PUT -T "$APK" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            "https://dawn-king-6cc3.orglam-service.workers.dev/app-upload?versionCode=${{ steps.ver.outputs.code }}&by=github"

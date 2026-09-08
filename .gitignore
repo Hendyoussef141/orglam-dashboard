@@ -1,0 +1,10 @@
+node_modules/
+orglam-app/node_modules/
+orglam-app/android/.gradle/
+orglam-app/android/app/build/
+orglam-app/android/build/
+*.jks
+*.keystore
+*adminsdk*.json
+.idea/
+*.log
