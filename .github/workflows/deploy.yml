@@ -14,14 +14,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # wrangler expects the entrypoint named in wrangler.toml (main = "worker.js"), but the file
-      # is kept under its readable name in the repo.
+      # wrangler expects the entrypoint named in wrangler.toml (main = "worker.js"). The worker
+      # itself is kept under whichever readable name it already has in the repo, so both are
+      # accepted rather than forcing a rename.
       - name: Stage the worker entrypoint
-        run: cp "Orglam Worker.js" worker.js
+        run: |
+          if [ -f "Orglam Worker.js" ]; then
+            cp "Orglam Worker.js" worker.js
+          elif [ -f "worker_84.txt" ]; then
+            cp worker_84.txt worker.js
+          else
+            echo "No worker source found (expected 'Orglam Worker.js' or 'worker_84.txt')."
+            exit 1
+          fi
+          node --check worker.js   # a syntax error must fail here, not half-way through a deploy
 
       - name: Inject the KV namespace id
-        run: |
-          sed -i "s/PASTE_YOUR_KV_NAMESPACE_ID/${{ secrets.KV_NAMESPACE_ID }}/" wrangler.toml
+        run: sed -i "s/PASTE_YOUR_KV_NAMESPACE_ID/${{ secrets.KV_NAMESPACE_ID }}/" wrangler.toml
 
       - uses: cloudflare/wrangler-action@v3
         with:
@@ -33,6 +42,9 @@ jobs:
     runs-on: ubuntu-latest
     # Never publishes an APK the worker deploy hasn't accepted first.
     needs: worker
+    # Signing secrets are what make an installable build; without them this job would produce an
+    # unsigned APK that no phone accepts, so it is skipped instead of failing every push.
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.BUILD_ANDROID == 'true' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -56,10 +68,10 @@ jobs:
           sed -i -E "s/versionCode +[0-9]+/versionCode $VER/" orglam-app/android/app/build.gradle
           sed -i -E "s/versionName +\"[^\"]*\"/versionName \"$VER.0\"/" orglam-app/android/app/build.gradle
 
-      - name: Copy the dashboard into the app
+      # The dashboard already lives at orglam-app/www/index.html in this repo, so there is nothing
+      # to copy in - cap copy just moves www into the android assets folder.
+      - name: Bundle the dashboard into the app
         run: |
-          cp "Orglam Dashboard.html" orglam-app/www/
-          cp sw.js manifest.json orglam-app/www/ 2>/dev/null || true
           cd orglam-app
           npm ci || npm install
           npx cap copy android
@@ -67,8 +79,7 @@ jobs:
       # The same keystore the installed app was signed with, stored as a base64 secret - a build
       # signed with a different key cannot install over what is already on people's phones.
       - name: Restore the signing keystore
-        run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > orglam-app/android/app/release.jks
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > orglam-app/android/app/release.jks
 
       - name: Build the release APK
         working-directory: orglam-app/android
@@ -81,6 +92,7 @@ jobs:
       - name: Publish to every phone
         run: |
           APK=$(find orglam-app/android/app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -z "$APK" ]; then echo "No APK was produced."; exit 1; fi
           echo "Publishing $APK as version ${{ steps.ver.outputs.code }}"
           curl -f -X PUT -T "$APK" \
             -H "Content-Type: application/vnd.android.package-archive" \

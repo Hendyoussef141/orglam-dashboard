@@ -1,0 +1,18 @@
+name = "dawn-king-6cc3"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# The 1-minute Cron Trigger the scheduled() handler relies on (cronDue() derives every other
+# interval from the clock, so this single trigger drives all the jobs).
+[triggers]
+crons = ["* * * * *"]
+
+# Paste your KV namespace id here (Cloudflare dashboard -> Storage & Databases -> KV -> the
+# namespace bound as SALES_CACHE -> copy its ID).
+[[kv_namespaces]]
+binding = "SALES_CACHE"
+id = "PASTE_YOUR_KV_NAMESPACE_ID"
+
+# Secrets (SHOPIFY_ACCESS_TOKEN, BOSTA_API_KEY, CF_API_TOKEN, CF_ACCOUNT_ID, GMAIL_REFRESH_TOKEN,
+# ...) are NOT listed here on purpose - they stay set in the Cloudflare dashboard and survive
+# every build. Never commit them to the repo.

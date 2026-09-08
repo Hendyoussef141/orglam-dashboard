@@ -8,3 +8,5 @@ orglam-app/android/build/
 *adminsdk*.json
 .idea/
 *.log
+cloudflare-secrets.json
+.wrangler/
