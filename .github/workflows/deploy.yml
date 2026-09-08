@@ -68,13 +68,14 @@ jobs:
           sed -i -E "s/versionCode +[0-9]+/versionCode $VER/" orglam-app/android/app/build.gradle
           sed -i -E "s/versionName +\"[^\"]*\"/versionName \"$VER.0\"/" orglam-app/android/app/build.gradle
 
-      # The dashboard already lives at orglam-app/www/index.html in this repo, so there is nothing
-      # to copy in - cap copy just moves www into the android assets folder.
+      # sync, not copy: the capacitor-cordova-android-plugins folder isn't in the repo (it's
+      # generated), and copy alone leaves gradle looking for a cordova.variables.gradle that
+      # doesn't exist. sync regenerates it and then copies the web assets.
       - name: Bundle the dashboard into the app
         run: |
           cd orglam-app
           npm ci || npm install
-          npx cap copy android
+          npx cap sync android
 
       # Git does not carry the executable bit through Windows, so gradlew arrives unrunnable here
       # and the build dies immediately with "Permission denied".
