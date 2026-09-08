@@ -55,7 +55,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'   # the Capacitor CLI refuses to run on anything below 22
 
       # The version number must be a real, rising integer compiled INTO the apk - the phones compare
       # it against their own installed versionCode. The run number gives that for free and never
