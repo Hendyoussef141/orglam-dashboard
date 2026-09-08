@@ -76,10 +76,22 @@ jobs:
           npm ci || npm install
           npx cap copy android
 
+      # Git does not carry the executable bit through Windows, so gradlew arrives unrunnable here
+      # and the build dies immediately with "Permission denied".
+      - name: Make gradlew executable
+        run: chmod +x orglam-app/android/gradlew
+
       # The same keystore the installed app was signed with, stored as a base64 secret - a build
       # signed with a different key cannot install over what is already on people's phones.
       - name: Restore the signing keystore
-        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > orglam-app/android/app/release.jks
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | tr -d '[:space:]' | base64 -d > orglam-app/android/app/release.jks
+          # An empty or malformed keystore would produce an unsigned APK that quietly fails to
+          # install on every phone, so it has to stop the run here instead.
+          if [ ! -s orglam-app/android/app/release.jks ]; then
+            echo "ANDROID_KEYSTORE_BASE64 is missing or not valid base64."
+            exit 1
+          fi
 
       - name: Build the release APK
         working-directory: orglam-app/android
