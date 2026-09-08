@@ -14,22 +14,8 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
-    // Signing: GitHub restores the keystore next to this file and passes the passwords in as
-    // environment variables. With no key file present the release build is left unsigned, as before.
-    def orglamKeystore = file(System.getenv("ORGLAM_KEYSTORE_PATH") ?: "release.jks")
-    signingConfigs {
-        release {
-            if (orglamKeystore.exists()) {
-                storeFile orglamKeystore
-                storePassword System.getenv("ORGLAM_STORE_PASSWORD") ?: "android"
-                keyAlias System.getenv("ORGLAM_KEY_ALIAS") ?: "androiddebugkey"
-                keyPassword System.getenv("ORGLAM_KEY_PASSWORD") ?: "android"
-            }
-        }
-    }
     buildTypes {
         release {
-            if (orglamKeystore.exists()) signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

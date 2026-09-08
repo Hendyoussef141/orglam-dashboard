@@ -10,3 +10,4 @@ orglam-app/android/build/
 *.log
 cloudflare-secrets.json
 .wrangler/
+android-keystore-base64.txt
