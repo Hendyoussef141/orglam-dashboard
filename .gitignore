@@ -13,3 +13,6 @@ cloudflare-secrets.json
 android-keystore-base64.txt
 set-secrets.bat
 cloudflare-secrets.json
+set-worker-vars.bat
+finish-shopify-token.bat
+test-shopify-token.bat

@@ -1,187 +1,21 @@
 name: Deploy
 
-# Every push to main builds, signs and publishes the Android app (dashboard included), and
-# deploys the Cloudflare Worker when the worker file changed.
+# Every push to main builds, signs and publishes the Android app (dashboard included).
 #
-# The worker is uploaded straight to Cloudflare's API with keep_bindings, NOT with wrangler.
-# That is the whole point: wrangler deploys replace the worker's variables with whatever the
-# repo declares, which is what wiped the plain-text ones (Shopify, Amazon, noon, Gmail,
-# Firebase) and zeroed every number in the app - keep_vars did not stop it. keep_bindings works
-# the other way round: Cloudflare carries the live variables, secrets and KV binding over from
-# the previous version and the upload only replaces the code. The repo never declares a single
-# value, so it cannot overwrite one.
+# The Cloudflare Worker is deliberately NOT deployed from here, and not from a .bat either.
+# Two separate attempts have wiped its credentials and zeroed every number in the app: wrangler
+# replaced the variables with whatever the repo declared, and an API upload with keep_bindings -
+# which Cloudflare documents as preserving secrets - deleted every secret anyway, leaving only
+# the KV binding. Recovered by rolling back to deployment d0ba1b43.
+#
+# The worker is edited in the Cloudflare dashboard (Workers & Pages -> dawn-king-6cc3 -> Edit
+# code) and nowhere else. "Orglam Worker.js" in the repo is a reference copy only.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 jobs:
-  worker:
-    name: Cloudflare Worker
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2   # needs the previous commit to see what changed
-
-      # A push that only touched the app, a .bat or docs must not re-deploy the worker.
-      - name: Does this push change the worker?
-        id: changed
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "worker=true" >> $GITHUB_OUTPUT; exit 0
-          fi
-          FILES=$(git diff --name-only HEAD^ HEAD || echo "")
-          echo "$FILES"
-          if echo "$FILES" | grep -qE '^(Orglam Worker\.js|wrangler\.toml)$'; then
-            echo "worker=true" >> $GITHUB_OUTPUT
-          else
-            echo "worker=false" >> $GITHUB_OUTPUT
-            echo "The worker did not change - skipping the deploy."
-          fi
-
-      # A broken file has to fail HERE, not half-way through an upload that leaves the live
-      # worker in pieces. Checked as .mjs: the worker is an ES module ("export default"), and
-      # node reads a .js file as CommonJS, where that line is itself a syntax error.
-      - name: Check the worker for syntax errors
-        if: steps.changed.outputs.worker == 'true'
-        run: |
-          if [ ! -f "Orglam Worker.js" ]; then
-            echo "\"Orglam Worker.js\" is not in the repository, so there is nothing to deploy."
-            echo "Put it next to wrangler.toml and push again."
-            exit 1
-          fi
-          cp "Orglam Worker.js" worker-check.mjs
-          node --check worker-check.mjs
-
-      # Records which variables/secrets/bindings the LIVE worker has, before anything is touched,
-      # so the step after the upload can prove none of them disappeared.
-      - name: Record the live worker's variables
-        id: before
-        if: steps.changed.outputs.worker == 'true'
-        env:
-          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          NAME=$(sed -nE 's/^name *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
-          curl -sS "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$NAME/settings" \
-            -H "Authorization: Bearer $CF_TOKEN" > before.json
-          # Parsed properly, and NAMES ONLY - a plain-text variable's value must never be printed
-          # into a build log.
-          python3 - <<'PY'
-          import json, sys
-          d = json.load(open("before.json"))
-          if not d.get("success"):
-              print("Cloudflare refused the request:")
-              print(json.dumps(d.get("errors") or d, indent=2)[:2000])
-              print("The token needs Account -> Workers Scripts -> Edit. Nothing was deployed.")
-              sys.exit(1)
-          b = (d.get("result") or {}).get("bindings") or []
-          names = sorted(f"{x.get('name')} ({x.get('type')})" for x in b)
-          print("The live worker currently has these bindings:")
-          for n in names: print(" ", n)
-          open("before.txt", "w").write("\n".join(sorted(str(x.get("name")) for x in b)))
-          if not names:
-              print("It reports NO bindings at all, which cannot be right - refusing to deploy blind.")
-              sys.exit(1)
-          PY
-
-      # compatibility_date is read from wrangler.toml so there is only one copy of it, and it is
-      # the only thing the upload declares besides the code itself.
-      - name: Upload the worker
-        if: steps.changed.outputs.worker == 'true'
-        env:
-          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          NAME=$(sed -nE 's/^name *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
-          COMPAT=$(sed -nE 's/^compatibility_date *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
-          echo "Deploying $NAME (compatibility_date $COMPAT)"
-          cp "Orglam Worker.js" worker.js
-
-          # keep_bindings: Cloudflare keeps the live plain-text variables, secrets and KV
-          # binding from the previous version. Nothing here can replace a value.
-          cat > metadata.json <<JSON
-          {
-            "main_module": "worker.js",
-            "compatibility_date": "$COMPAT",
-            "keep_bindings": ["plain_text", "json", "secret_text", "kv_namespace"]
-          }
-          JSON
-
-          RESP=$(curl -sS -X PUT \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$NAME" \
-            -H "Authorization: Bearer $CF_TOKEN" \
-            -F 'metadata=@metadata.json;type=application/json' \
-            -F 'worker.js=@worker.js;type=application/javascript+module')
-          echo "$RESP"
-          # Whitespace-tolerant on purpose: Cloudflare pretty-prints the response, so a literal
-          # '"success":true' match failed on a deploy that had in fact worked.
-          echo "$RESP" | tr -d ' \n' | grep -q '"success":true' || {
-            echo "The upload failed - the reason is above. The old worker is still live."
-            exit 1
-          }
-
-      # The actual guarantee: if a single variable, secret or binding name is missing after the
-      # upload, the run goes red and tells you to roll back - instead of the app quietly showing
-      # zeros. keep_bindings should make this impossible; this is here because it happened once.
-      - name: Prove no variable was lost
-        if: steps.changed.outputs.worker == 'true'
-        env:
-          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          NAME=$(sed -nE 's/^name *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
-          curl -sS "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$NAME/settings" \
-            -H "Authorization: Bearer $CF_TOKEN" > after.json
-          python3 - <<'PY'
-          import json, sys
-          d = json.load(open("after.json"))
-          b = (d.get("result") or {}).get("bindings") or []
-          after = set(str(x.get("name")) for x in b)
-          before = set(l for l in open("before.txt").read().split("\n") if l)
-          missing = sorted(before - after)
-          if missing:
-              print("These bindings existed before the deploy and are gone now:")
-              for m in missing: print(" ", m)
-              print("Roll back NOW: run rollback-worker.bat, or Cloudflare dashboard ->")
-              print("Workers -> dawn-king-6cc3 -> Deployments -> previous version -> Rollback.")
-              sys.exit(1)
-          print(f"All {len(before)} bindings survived the deploy.")
-          PY
-
-      # The 1-minute cron drives every scheduled job. Uploading code does not touch triggers, but
-      # re-asserting the schedule is idempotent and means the repo is the record of it.
-      - name: Keep the 1-minute cron trigger
-        if: steps.changed.outputs.worker == 'true'
-        env:
-          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          NAME=$(sed -nE 's/^name *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
-          curl -sS -X PUT \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$NAME/schedules" \
-            -H "Authorization: Bearer $CF_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data '[{"cron":"* * * * *"}]'
-          echo
-
-      # Proves the new code actually boots and can still read KV. A worker that throws on startup
-      # answers 500 here, and the run goes red instead of failing silently in the app.
-      - name: Check the live worker still answers
-        if: steps.changed.outputs.worker == 'true'
-        run: |
-          sleep 5
-          CODE=$(curl -s -o /tmp/body -w '%{http_code}' \
-            "https://dawn-king-6cc3.orglam-service.workers.dev/orders-no-whatsapp")
-          head -c 300 /tmp/body; echo
-          if [ "$CODE" != "200" ]; then
-            echo "The deployed worker answered HTTP $CODE. Roll back with rollback-worker.bat"
-            echo "or in the Cloudflare dashboard (Workers -> dawn-king-6cc3 -> Deployments)."
-            exit 1
-          fi
-          echo "Worker deployed and answering."
-
   android:
     name: Android build + publish
     runs-on: ubuntu-latest
