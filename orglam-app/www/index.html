@@ -6957,17 +6957,18 @@ function startAppUpdate() {
       status.innerText = sizeMb ? `Downloading ${sizeMb} MB… keep the app open` : 'Downloading… keep the app open';
     }
   }, 250);
-  // Android's installer sheet takes focus, which is the one reliable signal that the download
-  // finished on a build with no progress hook.
   const onHide = () => {
     if (document.visibilityState !== 'hidden') return;
+    let real = null;
+    try { if (typeof bridge.progress === 'function') real = Number(bridge.progress()); } catch (e) {}
+    const elapsed = Date.now() - t0;
+    const plausiblyDone = real === 100 || elapsed >= 0.6 * guessMs;
+    if (!plausiblyDone) return; // just an app switch - the bar and the timer keep running
     document.removeEventListener('visibilitychange', onHide);
     clearInterval(appUpdateProgressTimer);
-    // The installer taking focus is the true finish line on a build that reports no bytes, so the
-    // speed is learned from that too - otherwise the estimate never corrects itself.
-    const took = Date.now() - t0;
-    if (took > 1500) {
-      try { localStorage.setItem('app_update_bytes_per_ms', String((Number(appUpdatePending && appUpdatePending.fileSize) || 32000000) / took)); } catch (e) {}
+    // The rate is learned only from a CONFIRMED completion; a hide is not proof the bytes arrived.
+    if (real === 100 && elapsed > 1500) {
+      try { localStorage.setItem('app_update_bytes_per_ms', String(bytes / elapsed)); } catch (e) {}
     }
     bar.style.width = '100%';
     pct.innerText = '100%';
@@ -16845,6 +16846,13 @@ function deriveShipmentIdFromBoxId(boxId) {
   }
 
   let metaThreadPollInterval = null;
+  // Signature of what is currently on screen, kept in memory rather than in a data attribute.
+  let metaThreadRenderHash = '';
+  function metaHashString(s) {
+    let a = 5381, b = 52711;
+    for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); a = (a * 33 ^ c) >>> 0; b = (b * 31 ^ c) >>> 0; }
+    return s.length + ':' + a.toString(36) + b.toString(36);
+  }
   let metaPendingByKey = {};
   // Messages that arrived by push and haven't shown up in a server read yet. Storage is
   // eventually consistent, so the push (which carries the text with it) beats the poll by a few
@@ -17065,13 +17073,19 @@ function deriveShipmentIdFromBoxId(boxId) {
       updateThreadLastOrderBadge(conv || pending);
       refreshReorderRequestBanner(key);
       clearInterval(metaThreadPollInterval);
+      let metaPollTick = 0;
       metaThreadPollInterval = setInterval(() => {
-        if (metaCurrentThreadKey === key) openMetaThread(key, true);
-        else clearInterval(metaThreadPollInterval);
+        if (metaCurrentThreadKey !== key) { clearInterval(metaThreadPollInterval); return; }
+        const composer = document.getElementById('metaThreadInput');
+        const typing = composer && (document.activeElement === composer || composer.value.trim().length > 0);
+        // Every 3rd tick (~6s) while typing, every tick otherwise.
+        metaPollTick++;
+        if (typing && metaPollTick % 3 !== 0) return;
+        openMetaThread(key, true);
       }, 2000);
     }
     const msgsEl = document.getElementById('metaThreadMessages');
-    if (!silent) { msgsEl.innerHTML = '<div class="loading-status">Loading...</div>'; msgsEl.dataset.lastHtml = ''; }
+    if (!silent) { msgsEl.innerHTML = '<div class="loading-status">Loading...</div>'; metaThreadRenderHash = ''; }
     try {
       const res = await fetch(`${BASE_URL}/meta-conversation-thread?key=${encodeURIComponent(key)}`);
       const d = await res.json();
@@ -17136,9 +17150,10 @@ function deriveShipmentIdFromBoxId(boxId) {
           </div>
         </div>`;
       }).join('');
-      if (msgsEl.dataset.lastHtml !== renderedHtml) {
-        const wasNearBottom = !msgsEl.dataset.lastHtml || (msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 120);
-        msgsEl.dataset.lastHtml = renderedHtml;
+      const renderHash = metaHashString(renderedHtml);
+      if (metaThreadRenderHash !== renderHash) {
+        const wasNearBottom = !metaThreadRenderHash || (msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 120);
+        metaThreadRenderHash = renderHash;
         msgsEl.innerHTML = renderedHtml;
         if (wasNearBottom) msgsEl.scrollTop = msgsEl.scrollHeight;
       }
@@ -17260,9 +17275,17 @@ function deriveShipmentIdFromBoxId(boxId) {
     popup.innerHTML = EMOJI_LIST.map(e => `<span onclick="insertEmoji('${e}')" style="font-size:22px; cursor:pointer; padding:4px;">${e}</span>`).join('');
     popup.style.display = 'flex';
   }
+  let autoGrowFrame = null;
   function autoGrowMetaInput(el) {
-    el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    // Coalesced into one frame: reading scrollHeight right after writing height forces a reflow,
+    // and doing that on every single keystroke is what made fast typing feel heavy.
+    if (autoGrowFrame) return;
+    autoGrowFrame = requestAnimationFrame(() => {
+      autoGrowFrame = null;
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    });
+    return;
   }
   function insertEmoji(e) {
     const input = document.getElementById('metaThreadInput');
