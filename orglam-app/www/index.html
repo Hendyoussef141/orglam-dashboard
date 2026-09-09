@@ -3304,7 +3304,6 @@
     <div style="position:absolute; top:-60px; left:-40px; width:220px; height:220px; border-radius:50%; background:radial-gradient(circle, rgba(191,214,167,0.35), transparent 70%); filter:blur(10px); animation: eloraBlobFloat1 14s ease-in-out infinite;"></div>
     <div style="position:absolute; bottom:220px; right:-50px; width:260px; height:260px; border-radius:50%; background:radial-gradient(circle, rgba(230,204,143,0.22), transparent 70%); filter:blur(14px); animation: eloraBlobFloat2 18s ease-in-out infinite;"></div>
   </div>
-  <canvas id="todoLeavesCanvas" style="position:absolute; inset:0; z-index:1; pointer-events:none; filter:blur(2px);"></canvas>
   <div style="position:absolute; inset:0; z-index:1; pointer-events:none; backdrop-filter:blur(6.3px); -webkit-backdrop-filter:blur(6.3px); background:rgba(255,255,255,0.0135);"></div>
   <div class="screen-header" style="position:relative; z-index:2; display:flex; align-items:center; gap:14px; padding:calc(14px + env(safe-area-inset-top)) 20px 16px;">
     <button onclick="closeTodos()" style="width:36px; height:36px; min-width:36px; border-radius:50%; flex-shrink:0; color:#fff; cursor:pointer; background:rgba(255,255,255,0.14); backdrop-filter:blur(20px) saturate(180%); -webkit-backdrop-filter:blur(20px) saturate(180%); border:1px solid rgba(255,255,255,0.28); box-shadow:0 4px 14px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.4); font-size:15px;">←</button>
@@ -24610,7 +24609,7 @@ const NOON_LOGO_SRC = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/6xaJSl
       todoAmbientAudio.volume = 0.32;
     }
     todoAmbientAudio.play().catch(() => {});
-    startEloraLeaves('todoLeavesCanvas', 'todosScreen');
+    // The drifting leaves animation was removed from this screen - the background is static now.
     if (!todoAmbientWatch) {
       todoAmbientWatch = setInterval(() => {
         const el = document.getElementById('todosScreen');
@@ -24625,7 +24624,6 @@ const NOON_LOGO_SRC = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/6xaJSl
   function stopTodoAmbient() {
     if (todoAmbientWatch) { clearInterval(todoAmbientWatch); todoAmbientWatch = null; }
     if (todoAmbientAudio) { todoAmbientAudio.pause(); todoAmbientAudio.currentTime = 0; }
-    stopEloraLeaves('todoLeavesCanvas');
   }
   window.stopTodoAmbient = stopTodoAmbient;
   function todoDueLabel(iso) {
