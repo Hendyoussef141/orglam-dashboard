@@ -18,9 +18,9 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 
 /**
- * Installs an APK that arrived as a WhatsApp document. The file is downloaded to the app's own
- * cache (no storage permission needed), then handed to Android's package installer through a
- * FileProvider URI - a raw file:// URI is rejected on Android 7+.
+ * Installs an APK that arrived as a WhatsApp document, or the published update. The file is
+ * downloaded to the app's own cache (no storage permission needed), then handed to Android's
+ * package installer through a FileProvider URI - a raw file:// URI is rejected on Android 7+.
  *
  * Register in MainActivity.onCreate:
  *   bridge.getWebView().addJavascriptInterface(new ApkInstallBridge(this), "AndroidApkInstall");
@@ -28,6 +28,12 @@ import java.net.URL;
 public class ApkInstallBridge {
 
     private final Context ctx;
+    /**
+     * Download progress, 0-100, read by the web side's updating screen. -1 means "not downloading",
+     * which is what tells the web side to fall back to a paced estimate rather than showing a bar
+     * frozen at zero.
+     */
+    private volatile double progressPct = -1;
 
     public ApkInstallBridge(Context ctx) {
         this.ctx = ctx;
@@ -35,6 +41,7 @@ public class ApkInstallBridge {
 
     @JavascriptInterface
     public void install(final String url, final String fileName) {
+        progressPct = 0;
         new Thread(() -> {
             File out = null;
             try {
@@ -56,14 +63,24 @@ public class ApkInstallBridge {
 
                 if (c.getResponseCode() / 100 != 2) {
                     toast("Download failed (" + c.getResponseCode() + ")");
+                    progressPct = -1;
                     c.disconnect();
                     return;
                 }
 
+                // Content-Length is what makes the bar real rather than indeterminate; a chunked
+                // response reports -1, and the web side then eases the bar along by itself.
+                final long total = c.getContentLength();
+                long done = 0;
+
                 try (InputStream in = c.getInputStream(); FileOutputStream fos = new FileOutputStream(out)) {
                     byte[] buf = new byte[64 * 1024];
                     int n;
-                    while ((n = in.read(buf)) > 0) fos.write(buf, 0, n);
+                    while ((n = in.read(buf)) > 0) {
+                        fos.write(buf, 0, n);
+                        done += n;
+                        if (total > 0) progressPct = Math.min(99, (done * 100.0) / total);
+                    }
                     fos.flush();
                 }
                 c.disconnect();
@@ -71,15 +88,24 @@ public class ApkInstallBridge {
                 if (out.length() < 1024) {
                     toast("That file doesn't look like an app");
                     out.delete();
+                    progressPct = -1;
                     return;
                 }
 
+                progressPct = 100;
                 launchInstaller(out);
             } catch (Exception e) {
                 if (out != null && out.exists()) out.delete();
+                progressPct = -1;
                 toast("Could not download the app");
             }
         }).start();
+    }
+
+    /** 0-100 while downloading, 100 when the installer is being opened, -1 when idle or failed. */
+    @JavascriptInterface
+    public double progress() {
+        return progressPct;
     }
 
     private void launchInstaller(File apk) {
@@ -91,6 +117,7 @@ public class ApkInstallBridge {
             i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
             ctx.startActivity(i);
         } catch (Exception e) {
+            progressPct = -1;
             toast("Android refused to open the installer");
         }
     }
