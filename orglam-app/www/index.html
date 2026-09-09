@@ -421,7 +421,7 @@
     // The login gate is not a "screen" you can back out of - excluding it here is what stops the
     // Android back button (and browser back) from dismissing it and exposing the app logged out.
     // The to-do alarm is excluded for the same reason: it must be answered, not swiped away.
-    function isDismissible(el) { return el && el.id !== 'userSelectOverlay' && el.id !== 'todoAlarmOverlay' && el.id !== 'appUpdatingOverlay'; }
+    function isDismissible(el) { return el && el.id !== 'userSelectOverlay' && el.id !== 'todoAlarmOverlay' && el.id !== 'appUpdatingOverlay' && el.id !== 'appUpdateOverlay'; }
     const observer = new MutationObserver((mutations) => {
       for (const m of mutations) {
         if (m.attributeName !== 'class') continue;
@@ -6879,24 +6879,35 @@ async function checkForAppUpdate(loud) {
     const latest = await fetch(`${BASE_URL}/app-version`, { cache: 'no-store' }).then(r => r.json());
     if (!latest || !latest.versionCode || !latest.url) { if (loud) showToast('No build has been published yet', true); return; }
     if (latest.versionCode <= mine) { if (loud) showToast(`You are up to date - version ${mine}`); return; }
-    // A skipped version stays skipped until a newer one is published - but a required update is
-    // offered every launch regardless, and asking by hand overrides the skip.
-    if (!loud && !latest.mandatory && localStorage.getItem('app_update_skipped') === String(latest.versionCode)) return;
+    // No skipping: any newer published build must be installed before the app can be used.
     // Already downloading or installing this one: the periodic check kept re-opening the prompt on
     // top of the progress screen every few seconds, which read as the app nagging in a loop.
     if (document.getElementById('appUpdatingOverlay')?.classList.contains('open')) return;
     if (document.getElementById('appUpdateOverlay')?.classList.contains('open')) return;
     if (!loud && sessionStorage.getItem('app_update_started') === String(latest.versionCode)) return;
+    // Re-asserted every 15s: the update is not optional, so a prompt that gets dismissed by any
+    // means must reappear rather than leaving an out-of-date app in use.
+    if (!window.__updateEnforcer) {
+      window.__updateEnforcer = setInterval(() => {
+        const mineNow = nativeAppVersionCode();
+        if (!mineNow || !appUpdatePending || appUpdatePending.versionCode <= mineNow) return;
+        if (document.getElementById('appUpdatingOverlay')?.classList.contains('open')) return;
+        if (document.getElementById('appUpdateOverlay')?.classList.contains('open')) return;
+        openScreen('appUpdateOverlay');
+      }, 15000);
+    }
     appUpdatePending = latest;
     document.getElementById('appUpdateVersionLine').innerText = `Version ${latest.versionName || latest.versionCode} · you have ${nativeAppVersionName() || mine}`;
     document.getElementById('appUpdateNotesLine').innerText = latest.notes || '';
-    document.getElementById('appUpdateLaterBtn').style.display = latest.mandatory ? 'none' : 'block';
+    document.getElementById('appUpdateLaterBtn').style.display = 'none';
+    const line = document.getElementById('appUpdateNotesLine');
+    if (line && !latest.notes) line.innerText = 'This update is required to keep using the app.';
     openScreen('appUpdateOverlay');
   } catch (e) {}
 }
 function dismissAppUpdate() {
-  if (appUpdatePending) localStorage.setItem('app_update_skipped', String(appUpdatePending.versionCode));
-  document.getElementById('appUpdateOverlay').classList.remove('open');
+  // Kept only so the old button's handler cannot throw; updates are no longer skippable.
+  showToast('This update is required', true);
 }
 let appUpdateProgressTimer = null;
 function startAppUpdate() {
