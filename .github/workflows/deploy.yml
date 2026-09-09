@@ -1,12 +1,15 @@
 name: Deploy
 
-# Every push to main builds, signs and publishes the Android app (dashboard included).
+# Every push to main builds, signs and publishes the Android app (dashboard included), and
+# deploys the Cloudflare Worker when the worker file changed.
 #
-# Deploying the worker used to wipe its plain-text variables (Shopify, Amazon, noon, Gmail,
-# Firebase) and zero every number in the app, because wrangler replaces variables with whatever
-# the repo declares. Every one of those values is now stored as a Cloudflare SECRET instead, and
-# secrets are left untouched by a deploy - which is what makes this safe to automate.
-# Never add plain-text variables to this worker in the Cloudflare dashboard; use secrets.
+# The worker is uploaded straight to Cloudflare's API with keep_bindings, NOT with wrangler.
+# That is the whole point: wrangler deploys replace the worker's variables with whatever the
+# repo declares, which is what wiped the plain-text ones (Shopify, Amazon, noon, Gmail,
+# Firebase) and zeroed every number in the app - keep_vars did not stop it. keep_bindings works
+# the other way round: Cloudflare carries the live variables, secrets and KV binding over from
+# the previous version and the upload only replaces the code. The repo never declares a single
+# value, so it cannot overwrite one.
 on:
   push:
     branches: [main]
@@ -18,21 +21,144 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # wrangler expects the entrypoint named in wrangler.toml (main = "worker.js"); the file is
-      # kept under its readable name in the repo.
-      - name: Stage the worker entrypoint
-        run: |
-          cp "Orglam Worker.js" worker.js
-          node --check worker.js   # a syntax error must fail here, not half-way through a deploy
-
-      - name: Inject the KV namespace id
-        run: sed -i "s/PASTE_YOUR_KV_NAMESPACE_ID/${{ secrets.KV_NAMESPACE_ID }}/" wrangler.toml
-
-      - uses: cloudflare/wrangler-action@v3
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          fetch-depth: 2   # needs the previous commit to see what changed
+
+      # A push that only touched the app, a .bat or docs must not re-deploy the worker.
+      - name: Does this push change the worker?
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "worker=true" >> $GITHUB_OUTPUT; exit 0
+          fi
+          FILES=$(git diff --name-only HEAD^ HEAD || echo "")
+          echo "$FILES"
+          if echo "$FILES" | grep -qE '^(Orglam Worker\.js|wrangler\.toml)$'; then
+            echo "worker=true" >> $GITHUB_OUTPUT
+          else
+            echo "worker=false" >> $GITHUB_OUTPUT
+            echo "The worker did not change - skipping the deploy."
+          fi
+
+      # A broken file has to fail HERE, not half-way through an upload that leaves the live
+      # worker in pieces. Checked as .mjs: the worker is an ES module ("export default"), and
+      # node reads a .js file as CommonJS, where that line is itself a syntax error.
+      - name: Check the worker for syntax errors
+        if: steps.changed.outputs.worker == 'true'
+        run: |
+          if [ ! -f "Orglam Worker.js" ]; then
+            echo "\"Orglam Worker.js\" is not in the repository, so there is nothing to deploy."
+            echo "Put it next to wrangler.toml and push again."
+            exit 1
+          fi
+          cp "Orglam Worker.js" worker-check.mjs
+          node --check worker-check.mjs
+
+      # Records which variables/secrets/bindings the LIVE worker has, before anything is touched,
+      # so the step after the upload can prove none of them disappeared.
+      - name: Record the live worker's variables
+        id: before
+        if: steps.changed.outputs.worker == 'true'
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          NAME=$(sed -nE 's/^name *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
+          curl -sS "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$NAME/settings" \
+            -H "Authorization: Bearer $CF_TOKEN" > before.json
+          grep -o '"name":"[^"]*"' before.json | sort -u > before.txt || true
+          echo "The live worker currently has these bindings:"
+          cat before.txt
+          test -s before.txt || { echo "Could not read the worker's bindings - refusing to deploy blind."; exit 1; }
+
+      # compatibility_date is read from wrangler.toml so there is only one copy of it, and it is
+      # the only thing the upload declares besides the code itself.
+      - name: Upload the worker
+        if: steps.changed.outputs.worker == 'true'
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          NAME=$(sed -nE 's/^name *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
+          COMPAT=$(sed -nE 's/^compatibility_date *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
+          echo "Deploying $NAME (compatibility_date $COMPAT)"
+          cp "Orglam Worker.js" worker.js
+
+          # keep_bindings: Cloudflare keeps the live plain-text variables, secrets and KV
+          # binding from the previous version. Nothing here can replace a value.
+          cat > metadata.json <<JSON
+          {
+            "main_module": "worker.js",
+            "compatibility_date": "$COMPAT",
+            "keep_bindings": ["plain_text", "json", "secret_text", "kv_namespace"]
+          }
+          JSON
+
+          RESP=$(curl -sS -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$NAME" \
+            -H "Authorization: Bearer $CF_TOKEN" \
+            -F 'metadata=@metadata.json;type=application/json' \
+            -F 'worker.js=@worker.js;type=application/javascript+module')
+          echo "$RESP"
+          echo "$RESP" | grep -q '"success":true' || {
+            echo "The upload failed - the reason is above. The old worker is still live."
+            exit 1
+          }
+
+      # The actual guarantee: if a single variable, secret or binding name is missing after the
+      # upload, the run goes red and tells you to roll back - instead of the app quietly showing
+      # zeros. keep_bindings should make this impossible; this is here because it happened once.
+      - name: Prove no variable was lost
+        if: steps.changed.outputs.worker == 'true'
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          NAME=$(sed -nE 's/^name *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
+          curl -sS "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$NAME/settings" \
+            -H "Authorization: Bearer $CF_TOKEN" > after.json
+          grep -o '"name":"[^"]*"' after.json | sort -u > after.txt || true
+          MISSING=$(comm -23 before.txt after.txt)
+          if [ -n "$MISSING" ]; then
+            echo "These bindings existed before the deploy and are gone now:"
+            echo "$MISSING"
+            echo "Roll back immediately: run rollback-worker.bat, or Cloudflare dashboard ->"
+            echo "Workers -> dawn-king-6cc3 -> Deployments -> the previous version -> Rollback."
+            exit 1
+          fi
+          echo "All $(wc -l < before.txt) bindings survived the deploy."
+
+      # The 1-minute cron drives every scheduled job. Uploading code does not touch triggers, but
+      # re-asserting the schedule is idempotent and means the repo is the record of it.
+      - name: Keep the 1-minute cron trigger
+        if: steps.changed.outputs.worker == 'true'
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          NAME=$(sed -nE 's/^name *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
+          curl -sS -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$NAME/schedules" \
+            -H "Authorization: Bearer $CF_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '[{"cron":"* * * * *"}]'
+          echo
+
+      # Proves the new code actually boots and can still read KV. A worker that throws on startup
+      # answers 500 here, and the run goes red instead of failing silently in the app.
+      - name: Check the live worker still answers
+        if: steps.changed.outputs.worker == 'true'
+        run: |
+          sleep 5
+          CODE=$(curl -s -o /tmp/body -w '%{http_code}' \
+            "https://dawn-king-6cc3.orglam-service.workers.dev/orders-no-whatsapp")
+          head -c 300 /tmp/body; echo
+          if [ "$CODE" != "200" ]; then
+            echo "The deployed worker answered HTTP $CODE. Roll back with rollback-worker.bat"
+            echo "or in the Cloudflare dashboard (Workers -> dawn-king-6cc3 -> Deployments)."
+            exit 1
+          fi
+          echo "Worker deployed and answering."
 
   android:
     name: Android build + publish
@@ -47,7 +173,7 @@ jobs:
           fetch-depth: 2   # needs the previous commit to see what changed
 
       # A push that only touched the worker, a .bat file or docs cannot change the APK, so the
-      # whole 3-minute build is skipped for it.
+      # whole build is skipped for it.
       - name: Does this push change the app?
         id: changed
         run: |
@@ -56,9 +182,6 @@ jobs:
           fi
           FILES=$(git diff --name-only HEAD^ HEAD || echo "")
           echo "$FILES"
-          # Only the app's own files. Editing this workflow, a .bat or the worker does not change
-          # what is inside the APK, and publishing a new version for it just makes every phone
-          # prompt for an update that contains nothing new.
           if echo "$FILES" | grep -qE '^orglam-app/'; then
             echo "app=true" >> $GITHUB_OUTPUT
           else
@@ -71,7 +194,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'   # Gradle 8 needs 17-24; 25 fails with "class file major version 69"
-          cache: gradle        # Gradle wrapper + dependency cache: most of the 3.5 min was re-downloading these
+          cache: gradle
 
       - uses: actions/setup-node@v4
         if: steps.changed.outputs.app == 'true'
@@ -80,8 +203,6 @@ jobs:
           cache: npm
           cache-dependency-path: orglam-app/package-lock.json
 
-      # Compiled classes and the Gradle daemon's build cache, keyed on the gradle files - a run that
-      # changes only the dashboard then recompiles almost nothing.
       - name: Cache the Android build
         if: steps.changed.outputs.app == 'true'
         uses: actions/cache@v4
@@ -97,8 +218,7 @@ jobs:
             android-
 
       # The version number must be a real, rising integer compiled INTO the apk - the phones compare
-      # it against their own installed versionCode. The run number gives that for free and never
-      # repeats.
+      # it against their own installed versionCode. The run number gives that for free.
       - name: Set the version number
         id: ver
         if: steps.changed.outputs.app == 'true'
@@ -108,11 +228,6 @@ jobs:
           sed -i -E "s/versionCode +[0-9]+/versionCode $VER/" orglam-app/android/app/build.gradle
           sed -i -E "s/versionName +\"[^\"]*\"/versionName \"$VER.0\"/" orglam-app/android/app/build.gradle
 
-      # sync, not copy: the capacitor-cordova-android-plugins folder isn't in the repo (it's
-      # generated), and copy alone leaves gradle looking for a cordova.variables.gradle that
-      # doesn't exist. sync regenerates it and then copies the web assets.
-      # node_modules cached outright: `npm ci` deletes and reinstalls it on every run otherwise,
-      # which is ~20s for a dependency set that almost never changes.
       - name: Cache node_modules
         if: steps.changed.outputs.app == 'true'
         uses: actions/cache@v4
@@ -120,28 +235,25 @@ jobs:
           path: orglam-app/node_modules
           key: node-modules-${{ hashFiles('orglam-app/package-lock.json') }}
 
+      # sync, not copy: the capacitor-cordova-android-plugins folder isn't in the repo (it's
+      # generated), and copy alone leaves gradle looking for a cordova.variables.gradle that
+      # doesn't exist.
       - name: Bundle the dashboard into the app
         if: steps.changed.outputs.app == 'true'
         run: |
           cd orglam-app
-          # Skips the reinstall entirely when the cache above restored a matching tree.
           [ -d node_modules ] || npm ci || npm install
           npx cap sync android
 
-      # Git does not carry the executable bit through Windows, so gradlew arrives unrunnable here
-      # and the build dies immediately with "Permission denied".
+      # Git does not carry the executable bit through Windows, so gradlew arrives unrunnable here.
       - name: Make gradlew executable
         if: steps.changed.outputs.app == 'true'
         run: chmod +x orglam-app/android/gradlew
 
-      # The same keystore the installed app was signed with, stored as a base64 secret - a build
-      # signed with a different key cannot install over what is already on people's phones.
       - name: Restore the signing keystore
         if: steps.changed.outputs.app == 'true'
         run: |
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | tr -d '[:space:]' | base64 -d > orglam-app/android/app/release.jks
-          # An empty or malformed keystore would produce an unsigned APK that quietly fails to
-          # install on every phone, so it has to stop the run here instead.
           if [ ! -s orglam-app/android/app/release.jks ]; then
             echo "ANDROID_KEYSTORE_BASE64 is missing or not valid base64."
             exit 1
@@ -154,9 +266,6 @@ jobs:
           ORGLAM_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           ORGLAM_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ORGLAM_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        # --build-cache reuses compiled output across runs; --parallel and the configuration cache
-        # cut the rest. Lint is excluded - it runs automatically on a release build and is the
-        # single slowest task here, while checking source that a person already reviewed.
         run: ./gradlew assembleRelease --no-daemon --build-cache --parallel --configuration-cache -x lint -x lintVitalRelease -x lintVitalAnalyzeRelease
 
       - name: Publish to every phone

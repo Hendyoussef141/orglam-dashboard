@@ -11,3 +11,5 @@ orglam-app/android/build/
 cloudflare-secrets.json
 .wrangler/
 android-keystore-base64.txt
+set-secrets.bat
+cloudflare-secrets.json

@@ -42,7 +42,7 @@ function pemToArrayBuffer(pem) {
 let __fcmAccessTokenCache = null;
 async function getFcmAccessToken(env) {
   if (__fcmAccessTokenCache && __fcmAccessTokenCache.expiresAt > Date.now() + 60000) return __fcmAccessTokenCache.token;
-  const sa = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  const sa = JSON.parse(V.FIREBASE_SERVICE_ACCOUNT_JSON);
   const header = { alg: "RS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
   const claims = {
@@ -67,7 +67,7 @@ async function getFcmAccessToken(env) {
   return json.access_token;
 }
 async function sendFcmMessage(env, fcmToken, payloadObj) {
-  const sa = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  const sa = JSON.parse(V.FIREBASE_SERVICE_ACCOUNT_JSON);
   const accessToken = await getFcmAccessToken(env);
   // Must match the channel ids created client-side in setupNativePush() - a channel's sound is
   // fixed at creation, so this is how the Android app decides which bundled sound file plays,
@@ -254,7 +254,7 @@ async function notifyAllSubscribers(env, payloadObj) {
 
     // Native Android app (Capacitor wrapper) push, via Firebase Cloud Messaging - separate
     // subscriber list since FCM tokens aren't web-push subscriptions.
-    if (env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    if (V.FIREBASE_SERVICE_ACCOUNT_JSON) {
       try {
         const fcmTokens = (await env.SALES_CACHE.get("fcm_tokens", { type: "json" })) || [];
         const stillValidFcm = [];
@@ -289,6 +289,33 @@ function hydrateSecrets(env) {
   STOREFRONT_ACCESS_TOKEN = env.STOREFRONT_ACCESS_TOKEN || "";
   AMAZON_ADS_CLIENT_ID = env.AMAZON_ADS_CLIENT_ID || "";
   AMAZON_ADS_CLIENT_SECRET = env.AMAZON_ADS_CLIENT_SECRET || "";
+}
+
+// --- DEPLOY-PROOF CONFIG ---
+// wrangler replaces a worker's plain-text variables with whatever the repo declares, which twice
+// wiped these and took the app down. They are mirrored into KV (untouched by any deploy) and read
+// from there when the variable isn't set, so deploying can no longer break anything.
+const KV_BACKED_VARS = ["SHOPIFY_ACCESS_TOKEN","FIREBASE_SERVICE_ACCOUNT_JSON","LWA_CLIENT_ID","NOON_KEY_ID","NOON_PARTNER_ID","NOON_PROJECT_CODE","GMAIL_CLIENT_ID","GMAIL_REFRESH_TOKEN","GEMINI_API_KEY"];
+let V = {};
+let __varsHydratedAt = 0;
+async function hydrateVars(env) {
+  // Cached per isolate for a minute: this runs on every request, and a KV read per name per
+  // request would be an expensive way to fetch values that essentially never change.
+  const fresh = Date.now() - __varsHydratedAt < 60000;
+  const next = {};
+  let missing = [];
+  for (const n of KV_BACKED_VARS) {
+    if (env[n]) next[n] = env[n];
+    else if (fresh && V[n]) next[n] = V[n];
+    else missing.push(n);
+  }
+  if (missing.length) {
+    await Promise.all(missing.map(async (n) => {
+      try { const v = await env.SALES_CACHE.get("var:" + n); if (v) next[n] = v; } catch (e) {}
+    }));
+  }
+  V = next;
+  __varsHydratedAt = Date.now();
 }
 
 // --- AMAZON SP-API CONFIG ---
@@ -893,7 +920,7 @@ async function sendWaFlowButtonsMessage(env, phoneDigits, text, stepId, buttons,
 async function updateShopifyOrderShippingAddress(env, orderId, fullAddressText) {
   try {
     const q = `query($id: ID!) { order(id: $id) { shippingAddress { firstName lastName address1 address2 city province zip country phone company } } }`;
-    const qRes = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, { method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN }, body: JSON.stringify({ query: q, variables: { id: orderId } }) });
+    const qRes = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, { method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN }, body: JSON.stringify({ query: q, variables: { id: orderId } }) });
     const qJson = await qRes.json();
     const addr = qJson.data?.order?.shippingAddress || {};
     const mutation = `mutation($input: OrderInput!) { orderUpdate(input: $input) { order { id } userErrors { field message } } }`;
@@ -902,7 +929,7 @@ async function updateShopifyOrderShippingAddress(env, orderId, fullAddressText) 
     // put this detailed reply into address2 only, so both versions stay visible on the order
     // instead of the detailed reply overwriting/duplicating into address1 too.
     const input = { id: orderId, shippingAddress: { firstName: addr.firstName || "", lastName: addr.lastName || "", address1: addr.address1 || "", address2: fullAddressText, city: addr.city || "", province: addr.province || "", zip: addr.zip || "", country: addr.country || "", phone: addr.phone || "", company: addr.company || "" } };
-    const res = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, { method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN }, body: JSON.stringify({ query: mutation, variables: { input } }) });
+    const res = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, { method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN }, body: JSON.stringify({ query: mutation, variables: { input } }) });
     const resJson = await res.json();
     const userErrors = resJson.data?.orderUpdate?.userErrors;
     if (userErrors && userErrors.length) return { error: userErrors.map(e => e.message).join("; ") };
@@ -1002,7 +1029,7 @@ async function reorderShopifyOrder(env, orderGid) {
   const gql = async (query, variables) => {
     const res = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
       body: JSON.stringify({ query, variables }),
     });
     return await res.json();
@@ -1164,7 +1191,7 @@ async function applyWaFlowStepTag(env, orderGid, tag, ctxInfo) {
   try {
     const tagMutation = `mutation tagsAdd($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { field message } } }`;
     await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-      method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+      method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
       body: JSON.stringify({ query: tagMutation, variables: { id: orderGid, tags: [tag] } }),
     });
   } catch (e) { /* tagging is best-effort - shouldn't block the rest of the flow */ }
@@ -1430,7 +1457,7 @@ async function handleTestFireFlow(env, request) {
     try {
       const q = `query($q: String!) { orders(first: 1, query: $q) { edges { node { id name } } } }`;
       const res = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-        method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+        method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
         body: JSON.stringify({ query: q, variables: { q: `name:${num}` } }),
       });
       const j = await res.json();
@@ -1733,7 +1760,10 @@ async function getAmazonAccessToken(env) {
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: env.LWA_REFRESH_TOKEN,
-      client_id: env.LWA_CLIENT_ID,
+      // NOT interchangeable with AMAZON_ADS_CLIENT_ID - tested against Amazon directly: the ads app
+      // and the SP-API app are separate LWA apps, and the SP refresh token is rejected by the ads
+      // client. This must be the SP-API app's own client id from Seller Central > Develop Apps.
+      client_id: V.LWA_CLIENT_ID,
       client_secret: env.LWA_CLIENT_SECRET,
     }),
   });
@@ -2297,7 +2327,7 @@ function base64url(input) {
 async function createNoonJwt(env) {
   const header = { alg: "RS256", typ: "JWT" };
   const payload = {
-    sub: env.NOON_KEY_ID,
+    sub: V.NOON_KEY_ID,
     iat: Math.floor(Date.now() / 1000),
     jti: crypto.randomUUID(),
   };
@@ -2328,7 +2358,7 @@ async function getNoonSessionCookie(env) {
     },
     body: JSON.stringify({
       token: jwt,
-      default_project_code: env.NOON_PROJECT_CODE,
+      default_project_code: V.NOON_PROJECT_CODE,
     }),
   });
 
@@ -2376,12 +2406,12 @@ async function noonFbnFetch(env, path, body, cookie) {
       "User-Agent": NOON_USER_AGENT,
       "Cookie": cookie,
       "country-code": "eg",
-      "id-partner": env.NOON_PARTNER_ID || "46563",
+      "id-partner": V.NOON_PARTNER_ID || "46563",
       "x-locale": "en-eg",
       "x-platform": "web",
-      "x-project": env.NOON_PROJECT_CODE || "PRJ46563",
+      "x-project": V.NOON_PROJECT_CODE || "PRJ46563",
       "origin": NOON_FBN_BASE_URL,
-      "referer": `${NOON_FBN_BASE_URL}/en-eg/asn/createasn?project=${env.NOON_PROJECT_CODE || "PRJ46563"}&type=catalog&step=1`,
+      "referer": `${NOON_FBN_BASE_URL}/en-eg/asn/createasn?project=${V.NOON_PROJECT_CODE || "PRJ46563"}&type=catalog&step=1`,
     },
     body: JSON.stringify(body),
   });
@@ -4090,7 +4120,7 @@ async function markShopifyOrderPaid(env, ctx, orderId, source) {
   // wired up anywhere - reused here (instead of inventing a new one) so this now fires the flow
   // that should fire when Bosta actually delivers a COD order, instead of piggybacking on "paid".
   const SHOPIFY_STORE = "57wex0-sn.myshopify.com";
-  const SHOPIFY_TOKEN = env.SHOPIFY_ACCESS_TOKEN;
+  const SHOPIFY_TOKEN = V.SHOPIFY_ACCESS_TOKEN;
   const mutation = `mutation orderMarkAsPaid($input: OrderMarkAsPaidInput!) {
     orderMarkAsPaid(input: $input) {
       order { id displayFinancialStatus }
@@ -4253,7 +4283,7 @@ async function checkBostaTicketRepliesAndCompensations(env) {
         // partway through and every ticket after that point was never checked at all. That is why
         // an email-only reply could go unnotified. Budget the Gmail checks instead, and rotate the
         // starting point each run so every ticket is covered within a few cron ticks.
-        if (ticketTrackingNumber && env.GMAIL_REFRESH_TOKEN && gmailChecks < GMAIL_CHECK_BUDGET && ticketsChecked > gmailStartAt) {
+        if (ticketTrackingNumber && V.GMAIL_REFRESH_TOKEN && gmailChecks < GMAIL_CHECK_BUDGET && ticketsChecked > gmailStartAt) {
           gmailChecks++;
           try {
             const emails = await findBostaTicketEmails(env, ticketTrackingNumber);
@@ -4645,7 +4675,7 @@ async function checkLowStockRunway(env, force) {
     while (channels.shopify !== false && pages++ < 10) {
       const q = `query($cursor: String) { orders(first: 100, after: $cursor, query: ${JSON.stringify(`created_at:>=${since} AND -financial_status:voided`)}) { pageInfo { hasNextPage endCursor } edges { node { lineItems(first: 50) { edges { node { quantity variant { id } } } } } } } }`;
       const res = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-        method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+        method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
         body: JSON.stringify({ query: q, variables: { cursor } }),
       });
       const json = await res.json();
@@ -4668,7 +4698,7 @@ async function checkLowStockRunway(env, force) {
       const batch = ids.slice(i, i + 50);
       const q = `query($ids: [ID!]!) { nodes(ids: $ids) { ... on ProductVariant { id displayName inventoryQuantity inventoryItem { tracked } } } }`;
       const res = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-        method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+        method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
         body: JSON.stringify({ query: q, variables: { ids: batch } }),
       });
       const json = await res.json();
@@ -5017,6 +5047,7 @@ export default {
   // Called automatically by the Cron Trigger every 1 minute
   async scheduled(event, env, ctx) {
     hydrateSecrets(env);
+    await hydrateVars(env);
     env = withKvWriteEconomy(env);
     // Jumia's session is kept warm out of band: renewing on the half hour means the app always
     // finds a live token instead of discovering a dead one mid-screen. getJumiaToken renews only
@@ -5086,9 +5117,10 @@ export default {
 
   async fetch(request, env, ctx) {
     hydrateSecrets(env);
+    await hydrateVars(env);
     env = withKvWriteEconomy(env);
     const SHOPIFY_STORE = "57wex0-sn.myshopify.com";
-    const SHOPIFY_TOKEN = env.SHOPIFY_ACCESS_TOKEN;
+    const SHOPIFY_TOKEN = V.SHOPIFY_ACCESS_TOKEN;
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
@@ -5670,7 +5702,7 @@ export default {
         return new Response(JSON.stringify({ ok: true, sent: true, unreadCount: sentCount }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
       }
       if (url.pathname === "/fcm-debug-send" && request.method === "GET") {
-        if (!env.FIREBASE_SERVICE_ACCOUNT_JSON) return new Response(JSON.stringify({ error: "FIREBASE_SERVICE_ACCOUNT_JSON secret is not set" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+        if (!V.FIREBASE_SERVICE_ACCOUNT_JSON) return new Response(JSON.stringify({ error: "FIREBASE_SERVICE_ACCOUNT_JSON secret is not set" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
         const testTitle = url.searchParams.get("title") || "Test Notification";
         const testBody = url.searchParams.get("body") || "If you see this, FCM push is working.";
         const testTag = url.searchParams.get("tag") || "fcm-debug-test";
@@ -6928,7 +6960,7 @@ async function getShippingCostViaStorefront(SHOPIFY_STORE, lineItemsForCart, gov
               // Each Gmail lookup is many subrequests, so only the first couple fall back to it -
               // beyond that the badge simply omits "who replied last" rather than risking a failed
               // request that would leave every badge missing.
-              if (env.GMAIL_REFRESH_TOKEN && gmailFallbacks < 2) {
+              if (V.GMAIL_REFRESH_TOKEN && gmailFallbacks < 2) {
                 gmailFallbacks++;
                 const emails = await findBostaTicketEmails(env, trackingNumber);
                 const latestEmail = emails.slice().sort((a, b) => new Date(b.date) - new Date(a.date))[0];
@@ -6997,7 +7029,7 @@ async function getShippingCostViaStorefront(SHOPIFY_STORE, lineItemsForCart, gov
       // unrelated ticket on Bosta - too risky to guess against a live support-ticket API. ---
       if (url.pathname === "/bosta-ticket-email-reply" && request.method === "POST") {
         try {
-          if (!env.GMAIL_REFRESH_TOKEN) return new Response(JSON.stringify({ error: "Gmail not connected" }), { status: 400, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+          if (!V.GMAIL_REFRESH_TOKEN) return new Response(JSON.stringify({ error: "Gmail not connected" }), { status: 400, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           const { trackingNumber, message } = await request.json();
           if (!trackingNumber || !message) return new Response(JSON.stringify({ error: "Missing trackingNumber or message" }), { status: 400, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           await sendBostaTicketEmailReply(env, trackingNumber, message);
@@ -7041,7 +7073,7 @@ async function getShippingCostViaStorefront(SHOPIFY_STORE, lineItemsForCart, gov
           let list = [], page = 1, readFailed = false, callBudget = 22; // leave room for the Gmail lookup
           // Started NOW, not after the Bosta loop - both sources are independent, so they run
           // together and the screen waits only for the slower one.
-          const emailsPromise = (trackingNumber && env.GMAIL_REFRESH_TOKEN)
+          const emailsPromise = (trackingNumber && V.GMAIL_REFRESH_TOKEN)
             ? findBostaTicketEmails(env, trackingNumber).catch(e => ({ __error: (e.message || "Gmail lookup failed").slice(0, 160) }))
             : Promise.resolve([]);
           while (page <= 6 && callBudget > 0) {
@@ -7291,9 +7323,9 @@ async function getShippingCostViaStorefront(SHOPIFY_STORE, lineItemsForCart, gov
       // dynamic reply so Elora's voice is reliable and consistent ---
       if (url.pathname === "/gemini-tts" && request.method === "POST") {
         try {
-          if (!env.GEMINI_API_KEY) return new Response(JSON.stringify({ error: "GEMINI_API_KEY is not set" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+          if (!V.GEMINI_API_KEY) return new Response(JSON.stringify({ error: "GEMINI_API_KEY is not set" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           const { text, voice } = await request.json();
-          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${env.GEMINI_API_KEY}`, {
+          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${V.GEMINI_API_KEY}`, {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               contents: [{ parts: [{ text: `Say naturally, in the same language as this text: ${text}` }] }],
@@ -7347,10 +7379,10 @@ async function getShippingCostViaStorefront(SHOPIFY_STORE, lineItemsForCart, gov
           if (!audioFile) return new Response(JSON.stringify({ error: "No audio provided" }), { status: 400, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           const audioBuf = await audioFile.arrayBuffer();
           const engine = incomingForm.get("engine") || "groq";
-          if (engine === "gemini" && env.GEMINI_API_KEY) {
+          if (engine === "gemini" && V.GEMINI_API_KEY) {
             try {
               const b64 = await arrayBufferToBase64(audioBuf);
-              const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${env.GEMINI_API_KEY}`, {
+              const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${V.GEMINI_API_KEY}`, {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   contents: [{ parts: [
@@ -7433,7 +7465,7 @@ async function getShippingCostViaStorefront(SHOPIFY_STORE, lineItemsForCart, gov
 
       if (url.pathname === "/gemini-oa-complete" && request.method === "POST") {
         try {
-          if (!env.GEMINI_API_KEY) return new Response(JSON.stringify({ error: "GEMINI_API_KEY is not set as a Worker secret" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+          if (!V.GEMINI_API_KEY) return new Response(JSON.stringify({ error: "GEMINI_API_KEY is not set as a Worker secret" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           const body = await request.json();
           const model = body.model || "gemini-3.5-flash-lite";
           // Client speaks the same OpenAI-shaped {messages, tools} format used for Groq/OpenRouter -
@@ -7455,7 +7487,7 @@ async function getShippingCostViaStorefront(SHOPIFY_STORE, lineItemsForCart, gov
             return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content || "" }] };
           });
           const tools = body.tools?.length ? [{ functionDeclarations: body.tools.map(t => ({ name: t.function.name, description: t.function.description, parameters: t.function.parameters })) }] : undefined;
-          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`, {
+          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${V.GEMINI_API_KEY}`, {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ system_instruction: sys ? { parts: [{ text: sys.content }] } : undefined, contents, tools, generationConfig: { maxOutputTokens: 1024 } }),
           });
@@ -7474,7 +7506,7 @@ async function getShippingCostViaStorefront(SHOPIFY_STORE, lineItemsForCart, gov
 
       if (url.pathname === "/gemini-complete" && request.method === "POST") {
         try {
-          if (!env.GEMINI_API_KEY) return new Response(JSON.stringify({ error: "GEMINI_API_KEY is not set as a Worker secret" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+          if (!V.GEMINI_API_KEY) return new Response(JSON.stringify({ error: "GEMINI_API_KEY is not set as a Worker secret" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           const body = await request.json();
           const model = body.model || "gemini-3.5-flash-lite";
           // Free-tier rate limit is only 20 req/min, and one logical "question" can burn several
@@ -7483,7 +7515,7 @@ async function getShippingCostViaStorefront(SHOPIFY_STORE, lineItemsForCart, gov
           // really just normal, brief contention.
           let geminiRes, json;
           for (let attempt = 0; attempt < 2; attempt++) {
-            geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`, {
+            geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${V.GEMINI_API_KEY}`, {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ system_instruction: body.system_instruction, contents: body.contents, tools: body.tools, generationConfig: body.generationConfig || { maxOutputTokens: 1024 } }),
             });
@@ -8078,7 +8110,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
         // "Connected" now means EITHER the official API key pair or a pasted cookie - the app
         // authenticates with the key pair by default, so no cookie is required to be connected.
         const sess = await env.SALES_CACHE.get("noon_ads_session", { type: "json" });
-        const hasApiKey = !!(env.NOON_KEY_ID && env.NOON_PRIVATE_KEY);
+        const hasApiKey = !!(V.NOON_KEY_ID && env.NOON_PRIVATE_KEY);
         return new Response(JSON.stringify({ connected: hasApiKey || !!sess?.cookie, via: hasApiKey ? "api_key" : (sess?.cookie ? "pasted_cookie" : null), savedAt: sess?.savedAt || null }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
       }
       if (url.pathname === "/wa-flow-awaiting-debug" && request.method === "GET") {
@@ -10619,6 +10651,40 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
           },
         });
       }
+      // Copies the currently-set variables into KV so a deploy can never lose them again. Safe to
+      // call any time: it only ever writes values that are actually present, and never removes one.
+      if (url.pathname === "/set-vars" && request.method === "POST") {
+        const provided = url.searchParams.get("key") || "";
+        if (!env.EXPORT_KEY || provided !== env.EXPORT_KEY) return new Response("Not found", { status: 404 });
+        const body = await request.json();
+        const saved = [], unknown = [];
+        for (const [n, v] of Object.entries(body || {})) {
+          if (!KV_BACKED_VARS.includes(n)) { unknown.push(n); continue; }
+          if (v === null || v === undefined || String(v).trim() === "") continue;
+          await env.SALES_CACHE.put("var:" + n, String(v));
+          saved.push(n);
+        }
+        __varsHydratedAt = 0;
+        const stillMissing = [];
+        for (const n of KV_BACKED_VARS) if (!(await env.SALES_CACHE.get("var:" + n))) stillMissing.push(n);
+        return new Response(JSON.stringify({ saved, unknown, stillMissing }, null, 2), {
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" },
+        });
+      }
+      if (url.pathname === "/mirror-vars-to-kv") {
+        const provided = url.searchParams.get("key") || "";
+        if (!env.EXPORT_KEY || provided !== env.EXPORT_KEY) return new Response("Not found", { status: 404 });
+        const saved = [], alreadyInKv = [], missing = [];
+        for (const n of KV_BACKED_VARS) {
+          if (env[n]) { await env.SALES_CACHE.put("var:" + n, String(env[n])); saved.push(n); }
+          else if (await env.SALES_CACHE.get("var:" + n)) alreadyInKv.push(n);
+          else missing.push(n);
+        }
+        __varsHydratedAt = 0; // force a re-read on the next request
+        return new Response(JSON.stringify({ saved, alreadyInKv, missing }, null, 2), {
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" },
+        });
+      }
       if (url.pathname === "/app-version" && request.method === "GET") {
         const v = (await env.SALES_CACHE.get("app_latest_version", { type: "json" })) || null;
         return new Response(JSON.stringify(v || {}), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
@@ -10681,6 +10747,48 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
         }
         if (hit) await env.SALES_CACHE.put(key, JSON.stringify(doc));
         return new Response(JSON.stringify({ ok: hit }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+      }
+      // --- SHOPIFY OAUTH ---
+      // Shopify stopped issuing static Admin API tokens for Dev Dashboard apps, so the token is
+      // obtained the only way left: the app's own install flow, using the client id/secret from
+      // the Dev Dashboard. The result is written to KV (var:SHOPIFY_ACCESS_TOKEN), which no deploy
+      // can wipe - the failure mode that took the app down twice.
+      if (url.pathname === "/shopify-connect") {
+        const scopes = [
+          "read_orders", "write_orders", "read_all_orders",
+          "read_products", "write_products",
+          "read_inventory", "write_inventory",
+          "read_customers", "write_customers",
+          "read_draft_orders", "write_draft_orders",
+          "read_fulfillments", "write_fulfillments",
+          "read_merchant_managed_fulfillment_orders", "write_merchant_managed_fulfillment_orders",
+          "read_locations", "read_reports", "read_analytics",
+        ].join(",");
+        const state = crypto.randomUUID();
+        await env.SALES_CACHE.put("shopify_oauth_state", state, { expirationTtl: 900 });
+        const redirectUri = `${url.origin}/shopify-oauth-callback`;
+        const authorize = `https://${SHOPIFY_STORE_DOMAIN}/admin/oauth/authorize?client_id=${encodeURIComponent(env.SHOPIFY_CLIENT_ID || "")}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
+        if (!env.SHOPIFY_CLIENT_ID) return new Response("SHOPIFY_CLIENT_ID is not set as a Worker secret.", { status: 500 });
+        return Response.redirect(authorize, 302);
+      }
+      if (url.pathname === "/shopify-oauth-callback") {
+        const code = url.searchParams.get("code");
+        const state = url.searchParams.get("state");
+        const expected = await env.SALES_CACHE.get("shopify_oauth_state");
+        if (!code) return new Response("No code returned by Shopify.", { status: 400 });
+        if (!expected || state !== expected) return new Response("This install link has expired - start again at /shopify-connect.", { status: 400 });
+        const res = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/oauth/access_token`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ client_id: env.SHOPIFY_CLIENT_ID, client_secret: env.SHOPIFY_CLIENT_SECRET, code }),
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.access_token) {
+          return new Response(`Shopify refused the exchange (HTTP ${res.status}): ${JSON.stringify(json)}`, { status: 500 });
+        }
+        await env.SALES_CACHE.put("var:SHOPIFY_ACCESS_TOKEN", json.access_token);
+        await env.SALES_CACHE.delete("shopify_oauth_state");
+        __varsHydratedAt = 0; // force the next request to pick the new token up immediately
+        return new Response(`Shopify connected. Scopes granted: ${json.scope || "(none reported)"}\n\nYou can close this page - the dashboard's numbers should be back.`, { headers: { "Content-Type": "text/plain" } });
       }
       if (url.pathname === "/todos" && request.method === "GET") {
         const user = url.searchParams.get("user") || "";
@@ -10948,7 +11056,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
           const orderNumber = orderNumberRaw.replace(/^#/, "");
           const q = `query { orders(first: 1, query: "name:#${orderNumber}") { edges { node { id name } } } }`;
           const qRes = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
             body: JSON.stringify({ query: q }),
           });
           const qJson = await qRes.json();
@@ -10985,7 +11093,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
       }
       if (url.pathname === "/create-shopify-order" && request.method === "POST") {
         try {
-          if (!env.SHOPIFY_ACCESS_TOKEN) return new Response(JSON.stringify({ error: "SHOPIFY_ACCESS_TOKEN is not set" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+          if (!V.SHOPIFY_ACCESS_TOKEN) return new Response(JSON.stringify({ error: "SHOPIFY_ACCESS_TOKEN is not set" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           const body = await request.json();
           const { customerName, phone, address, city, governorate, items, paymentMethod, createdByUser } = body;
           if (!customerName || !phone || !address || !items?.length) return new Response(JSON.stringify({ error: "Missing customerName, phone, address, or items" }), { status: 400, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
@@ -11000,7 +11108,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
             // match), then pick the best variant within that product (by size keyword if given).
             const searchQ = `query { products(first: 3, query: "title:*${words.join("* AND title:*")}*") { edges { node { title variants(first: 10) { edges { node { id title price } } } } } } }`;
             const sRes = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-              method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+              method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
               body: JSON.stringify({ query: searchQ }),
             });
             const sJson = await sRes.json();
@@ -11041,7 +11149,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
             const e164 = digits.startsWith("20") ? `+${digits}` : `+20${digits.replace(/^0/, "")}`;
             const custQ = `query { customers(first: 10, query: ${JSON.stringify(`phone:${e164}`)}) { edges { node { id phone } } } }`;
             const custRes = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-              method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+              method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
               body: JSON.stringify({ query: custQ }),
             });
             const custJson = await custRes.json();
@@ -11050,7 +11158,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
             if (!customerId) {
               const createCustQ = `mutation c($input: CustomerInput!) { customerCreate(input: $input) { customer { id } userErrors { field message } } }`;
               const createCustRes = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-                method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+                method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
                 body: JSON.stringify({ query: createCustQ, variables: { input: { firstName: shippingAddress.firstName, lastName: shippingAddress.lastName, phone: e164, addresses: [{ ...shippingAddress, phone: e164 }] } } }),
               });
               const createCustJson = await createCustRes.json();
@@ -11060,7 +11168,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
           } catch (e) { /* proceed unlinked - order still carries the address name */ }
           const createMutation = `mutation d($input: DraftOrderInput!) { draftOrderCreate(input: $input) { draftOrder { id name totalPrice } userErrors { field message } } }`;
           const createRes = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
             body: JSON.stringify({ query: createMutation, variables: { input: draftInput } }),
           });
           const createJson = await createRes.json();
@@ -11076,7 +11184,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
           // input to discover the store's configured rates for this address, then apply the cheapest.
           const ratesQ = `mutation calc($input: DraftOrderInput!) { draftOrderCalculate(input: $input) { calculatedDraftOrder { availableShippingRates { handle title price { amount } } } userErrors { field message } } }`;
           const ratesRes = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
             body: JSON.stringify({ query: ratesQ, variables: { input: draftInput } }),
           });
           const ratesJson = await ratesRes.json();
@@ -11086,7 +11194,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
             const cheapest = rates.reduce((a, b) => parseFloat(a.price.amount) <= parseFloat(b.price.amount) ? a : b);
             const shipMutation = `mutation u($id: ID!, $input: DraftOrderInput!) { draftOrderUpdate(id: $id, input: $input) { userErrors { field message } } }`;
             await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-              method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+              method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
               body: JSON.stringify({ query: shipMutation, variables: { id: draftId, input: { shippingLine: { shippingRateHandle: cheapest.handle, title: cheapest.title } } } }),
             });
           } else {
@@ -11097,7 +11205,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
           const completeMutation = `mutation c($id: ID!, $paymentPending: Boolean) { draftOrderComplete(id: $id, paymentPending: $paymentPending) { draftOrder { order { id name totalPrice } } userErrors { field message } } }`;
           const isCod = !paymentMethod || /cod|cash/i.test(paymentMethod);
           const completeRes = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
             body: JSON.stringify({ query: completeMutation, variables: { id: draftId, paymentPending: isCod } }),
           });
           const completeJson = await completeRes.json();
@@ -11122,7 +11230,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
             lineItems(first: 20) { edges { node { title quantity } } }
           } } } }`;
           const qRes = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
             body: JSON.stringify({ query: q }),
           });
           const qJson = await qRes.json();
@@ -11167,7 +11275,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
           const orderId = url.searchParams.get("id");
           const q = `query($id: ID!) { order(id: $id) { name phone customer { phone } shippingAddress { name address1 address2 city province zip country phone } } }`;
           const r = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-07/graphql.json`, {
-            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": env.SHOPIFY_ACCESS_TOKEN },
+            method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": V.SHOPIFY_ACCESS_TOKEN },
             body: JSON.stringify({ query: q, variables: { id: orderId } }),
           });
           const j = await r.json();
@@ -11185,7 +11293,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
           const t = (ticketsJson.data?.list || []).find(x => x.trackingNumber === trackingNumber);
           if (!t) return new Response(JSON.stringify({ error: "Ticket not found for that tracking number" }), { status: 404, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           await env.SALES_CACHE.delete(`bosta_ticket_email_seen_${trackingNumber}`);
-          if (!env.GMAIL_REFRESH_TOKEN) return new Response(JSON.stringify({ error: "Gmail not configured" }), { status: 400, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+          if (!V.GMAIL_REFRESH_TOKEN) return new Response(JSON.stringify({ error: "Gmail not configured" }), { status: 400, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           const emails = await findBostaTicketEmails(env, trackingNumber);
           const latestEmail = emails.slice().sort((a, b) => new Date(b.date) - new Date(a.date))[0];
           if (!latestEmail) return new Response(JSON.stringify({ error: "No emails found for this ticket" }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
@@ -11225,7 +11333,7 @@ async function adjustVariantInventory(SHOPIFY_STORE, SHOPIFY_TOKEN, variantId, d
             result.latestKeyComputed = latest ? (latest._id || latest.id || latest.created_at || latest.body_text) : null;
             result.prevSeenKeyStored = prevSeenKey;
             result.wouldHaveNotified = latest ? (prevSeenKey !== undefined && prevSeenKey !== null && prevSeenKey !== result.latestKeyComputed && latest.isCustomer !== true) : false;
-            if (env.GMAIL_REFRESH_TOKEN) {
+            if (V.GMAIL_REFRESH_TOKEN) {
               try {
                 const emails = await findBostaTicketEmails(env, t.trackingNumber);
                 const latestEmail = emails.slice().sort((a, b) => new Date(b.date) - new Date(a.date))[0];
@@ -13018,7 +13126,7 @@ async function parseXlsxToRows(arrayBuffer) {
           const code = url.searchParams.get("code");
           const res = await fetch("https://oauth2.googleapis.com/token", {
             method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({ code, client_id: env.GMAIL_CLIENT_ID, client_secret: env.GMAIL_CLIENT_SECRET, redirect_uri: "http://localhost", grant_type: "authorization_code" }),
+            body: new URLSearchParams({ code, client_id: V.GMAIL_CLIENT_ID, client_secret: env.GMAIL_CLIENT_SECRET, redirect_uri: "http://localhost", grant_type: "authorization_code" }),
           });
           const json = await res.json();
           return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
@@ -13044,7 +13152,7 @@ async function parseXlsxToRows(arrayBuffer) {
 async function getGmailAccessToken(env) {
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ client_id: env.GMAIL_CLIENT_ID, client_secret: env.GMAIL_CLIENT_SECRET, refresh_token: env.GMAIL_REFRESH_TOKEN, grant_type: "refresh_token" }),
+    body: new URLSearchParams({ client_id: V.GMAIL_CLIENT_ID, client_secret: env.GMAIL_CLIENT_SECRET, refresh_token: V.GMAIL_REFRESH_TOKEN, grant_type: "refresh_token" }),
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error_description || "Gmail token refresh failed");
@@ -13153,7 +13261,7 @@ async function getSentTicketMessages(env, ticketId) {
 async function syncAmazonResearchCases(env) {
   const diag = { build: "body-walk-v5", scanned: 0, candidates: 0, saved: 0, error: null };
   try {
-    if (!env.GMAIL_REFRESH_TOKEN) { diag.error = "gmail_not_connected"; return diag; }
+    if (!V.GMAIL_REFRESH_TOKEN) { diag.error = "gmail_not_connected"; return diag; }
     const accessToken = await getGmailAccessToken(env);
     if (!accessToken) { diag.error = "no_access_token"; return diag; }
     const q = `from:amazon.eg newer_than:180d`;
@@ -13299,7 +13407,7 @@ async function resolveBostaTemplateStubs(env, list, alreadyFetched) {
   if (!stubs.length) return;
   const times = stubs.map(m => new Date(m.created_at || 0).getTime()).filter(Boolean);
   let pool = (alreadyFetched || []).filter(e => !e.mine).map(e => ({ body: e.body, subject: "", at: new Date(e.date).getTime() }));
-  if (times.length && env.GMAIL_REFRESH_TOKEN) {
+  if (times.length && V.GMAIL_REFRESH_TOKEN) {
     pool = pool.concat(await fetchBostaEmailsBetween(env, Math.min(...times), Math.max(...times)));
   }
   const used = new Set();
@@ -13483,7 +13591,7 @@ async function findAndParseLatestCompensationEmail(env) {
       // an older, unrelated compensation email that happens to match the same search. ---
       if (url.pathname === "/bosta-compensation-gmail") {
         try {
-          if (!env.GMAIL_REFRESH_TOKEN) return new Response(JSON.stringify({ error: "gmail_not_connected" }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+          if (!V.GMAIL_REFRESH_TOKEN) return new Response(JSON.stringify({ error: "gmail_not_connected" }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           const sinceMs = parseInt(url.searchParams.get("since") || "0", 10);
           const found = await findAndParseLatestCompensationEmail(env);
           if (!found || found.receivedAt < sinceMs) return new Response(JSON.stringify({ pending: true }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
@@ -16405,8 +16513,8 @@ async function createNoonAsn(env, items) {
                 headers: {
                   "Content-Type": "application/json", "Accept": "application/json, application/pdf",
                   "Cookie": cookie, "User-Agent": NOON_USER_AGENT,
-                  "country-code": "eg", "id-partner": env.NOON_PARTNER_ID || "46563",
-                  "x-locale": "en-eg", "x-platform": "web", "x-project": env.NOON_PROJECT_CODE || "PRJ46563",
+                  "country-code": "eg", "id-partner": V.NOON_PARTNER_ID || "46563",
+                  "x-locale": "en-eg", "x-platform": "web", "x-project": V.NOON_PROJECT_CODE || "PRJ46563",
                   "origin": NOON_FBN_BASE_URL, "referer": `${NOON_FBN_BASE_URL}/en-eg/asn/asnlist`,
                 },
                 body: JSON.stringify({ asnNr, asn_nr: asnNr, idPartnerSource: NOON_PARTNER_ID }),
@@ -16489,7 +16597,7 @@ async function createNoonAsn(env, items) {
           const asnNr = url.searchParams.get("asn");
           if (!asnNr) return new Response(JSON.stringify({ error: "Pass ?asn=..." }), { status: 400, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
           const cookie = await getNoonSessionCookie(env);
-          const partnerId = Number(env.NOON_PARTNER_ID || 46563);
+          const partnerId = Number(V.NOON_PARTNER_ID || 46563);
           // A created ASN with warehouseTo: null cannot be sealed - noon answers a bare 500. The
           // warehouse assignment (routing) is therefore redone here from the ASN's own lines before
           // sealing, so a shipment that got stuck at "created" can be finished in place.
@@ -16536,7 +16644,7 @@ async function createNoonAsn(env, items) {
           const res = await fetch(`${NOON_FBN_BASE_URL}/_svc/inbound-partners/asn/partner_asn_details`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "Accept": "application/json", "Cookie": cookie, "User-Agent": NOON_USER_AGENT, "Origin": NOON_FBN_BASE_URL, "Referer": `${NOON_FBN_BASE_URL}/en-eg/asn/details/${asnNr}` },
-            body: JSON.stringify({ idPartnerSource: Number(env.NOON_PARTNER_ID || 46563), asnNr, pagination: { page: 1, perPage: 200, totalPages: 1 }, filters: {} }),
+            body: JSON.stringify({ idPartnerSource: Number(V.NOON_PARTNER_ID || 46563), asnNr, pagination: { page: 1, perPage: 200, totalPages: 1 }, filters: {} }),
           });
           const json = await res.json().catch(() => null);
           const row = json?.data?.rows?.[0];
@@ -16600,7 +16708,7 @@ async function createNoonAsn(env, items) {
               // "missing country code" came from these headers being absent, not from the body:
               // noon reads country-code / id-partner / x-project off the request the way its own
               // site sends them, and the create calls already do this via noonFbnFetch.
-              headers: { "Content-Type": "application/json", "Accept": "application/json, text/plain, */*", "Cookie": cookie, "User-Agent": NOON_USER_AGENT, "Origin": "https://fbn.noon.partners", "Referer": `https://fbn.noon.partners/en-eg/asn/schedule/${asnNr}?project=PRJ46563`, "x-locale": "en-eg", "country-code": "eg", "id-partner": env.NOON_PARTNER_ID || "46563", "x-platform": "web", "x-project": env.NOON_PROJECT_CODE || "PRJ46563" },
+              headers: { "Content-Type": "application/json", "Accept": "application/json, text/plain, */*", "Cookie": cookie, "User-Agent": NOON_USER_AGENT, "Origin": "https://fbn.noon.partners", "Referer": `https://fbn.noon.partners/en-eg/asn/schedule/${asnNr}?project=PRJ46563`, "x-locale": "en-eg", "country-code": "eg", "id-partner": V.NOON_PARTNER_ID || "46563", "x-platform": "web", "x-project": V.NOON_PROJECT_CODE || "PRJ46563" },
               body: JSON.stringify(body),
             });
             const text = await res.text();
@@ -16651,7 +16759,7 @@ async function createNoonAsn(env, items) {
               // "missing country code" came from these headers being absent, not from the body:
               // noon reads country-code / id-partner / x-project off the request the way its own
               // site sends them, and the create calls already do this via noonFbnFetch.
-              headers: { "Content-Type": "application/json", "Accept": "application/json, text/plain, */*", "Cookie": cookie, "User-Agent": NOON_USER_AGENT, "Origin": "https://fbn.noon.partners", "Referer": `https://fbn.noon.partners/en-eg/asn/schedule/${asnNr}?project=PRJ46563`, "x-locale": "en-eg", "country-code": "eg", "id-partner": env.NOON_PARTNER_ID || "46563", "x-platform": "web", "x-project": env.NOON_PROJECT_CODE || "PRJ46563" },
+              headers: { "Content-Type": "application/json", "Accept": "application/json, text/plain, */*", "Cookie": cookie, "User-Agent": NOON_USER_AGENT, "Origin": "https://fbn.noon.partners", "Referer": `https://fbn.noon.partners/en-eg/asn/schedule/${asnNr}?project=PRJ46563`, "x-locale": "en-eg", "country-code": "eg", "id-partner": V.NOON_PARTNER_ID || "46563", "x-platform": "web", "x-project": V.NOON_PROJECT_CODE || "PRJ46563" },
               body: JSON.stringify(payload),
             });
             const text = await res.text();
@@ -17212,8 +17320,11 @@ async function createNoonAsn(env, items) {
             scheduleEnd: body.scheduleEnd || null,
             weekendDays: Array.isArray(body.weekendDays) ? body.weekendDays : [5, 6],
             gracePeriodMinutes: body.gracePeriodMinutes != null ? Math.max(0, parseInt(body.gracePeriodMinutes, 10) || 0) : 0,
-            dailyRate: null, // derived from monthlySalary via computeDerivedRates() below - kept null so it never masks a live recompute
-            hourlyRate: null,
+            // dailyRate/hourlyRate are set above from the form. They used to be re-declared as null
+            // here "so a recompute can't be masked", but a duplicate key simply wins - which threw
+            // away the entered rate. computeDerivedRates() overwrites them from monthlySalary when
+            // there is one, and leaves them alone otherwise, so a daily/hourly-paid or
+            // commission-based employee keeps the rate that was actually typed in.
             employmentStatus: body.employmentStatus || "active",
             hireDate: body.hireDate || now.split("T")[0],
             phone: body.phone || "",

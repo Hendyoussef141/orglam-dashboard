@@ -16,7 +16,7 @@ crons = ["* * * * *"]
 # namespace bound as SALES_CACHE -> copy its ID).
 [[kv_namespaces]]
 binding = "SALES_CACHE"
-id = "PASTE_YOUR_KV_NAMESPACE_ID"
+id = "d4d81623f0e942f5b1590155450ec8d7"
 
 # Secrets (SHOPIFY_ACCESS_TOKEN, BOSTA_API_KEY, CF_API_TOKEN, CF_ACCOUNT_ID, GMAIL_REFRESH_TOKEN,
 # ...) are NOT listed here on purpose - they stay set in the Cloudflare dashboard and survive
