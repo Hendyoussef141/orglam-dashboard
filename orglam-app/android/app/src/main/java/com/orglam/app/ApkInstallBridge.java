@@ -41,6 +41,16 @@ public class ApkInstallBridge {
 
     @JavascriptInterface
     public void install(final String url, final String fileName) {
+        install(url, fileName, 0L);
+    }
+
+    /**
+     * expectedBytes lets the progress bar work even when the server sends no Content-Length - the
+     * published APK is streamed out of KV in chunks, so its response has none, and without this the
+     * bar sat at 0% and then jumped to done.
+     */
+    @JavascriptInterface
+    public void install(final String url, final String fileName, final long expectedBytes) {
         progressPct = 0;
         new Thread(() -> {
             File out = null;
@@ -68,9 +78,10 @@ public class ApkInstallBridge {
                     return;
                 }
 
-                // Content-Length is what makes the bar real rather than indeterminate; a chunked
-                // response reports -1, and the web side then eases the bar along by itself.
-                final long total = c.getContentLength();
+                // Content-Length is what makes the bar real; a chunked response reports -1, and the
+                // size the web side passed in is used instead.
+                final long headerTotal = c.getContentLength();
+                final long total = headerTotal > 0 ? headerTotal : expectedBytes;
                 long done = 0;
 
                 try (InputStream in = c.getInputStream(); FileOutputStream fos = new FileOutputStream(out)) {
