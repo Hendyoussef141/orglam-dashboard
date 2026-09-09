@@ -36,7 +36,10 @@ jobs:
           fi
           FILES=$(git diff --name-only HEAD^ HEAD || echo "")
           echo "$FILES"
-          if echo "$FILES" | grep -qE '^orglam-app/|^\.github/workflows/'; then
+          # Only the app's own files. Editing this workflow, a .bat or the worker does not change
+          # what is inside the APK, and publishing a new version for it just makes every phone
+          # prompt for an update that contains nothing new.
+          if echo "$FILES" | grep -qE '^orglam-app/'; then
             echo "app=true" >> $GITHUB_OUTPUT
           else
             echo "app=false" >> $GITHUB_OUTPUT
