@@ -13370,7 +13370,10 @@ async function syncAmazonResearchCases(env) {
 // ("rto-deliveries-otp-mail-template") rather than the message it sent - useless on screen. The
 // real content only exists in the mailbox, so fetch Bosta mail around the same timestamps and
 // pair each stub with the message it stands for.
-const BOSTA_TEMPLATE_STUB = /^[a-z0-9]+(?:[-_][a-z0-9]+)*[-_](?:mail[-_])?template$/i;
+// The stub pattern lives inside resolveBostaTemplateStubs below, NOT out here: this whole block
+// sits inside the request handler, so a const declared at this line does not exist yet when the
+// ticket-thread route (far earlier in the same body) runs - which failed every thread with
+// "Cannot access 'BOSTA_TEMPLATE_STUB' before initialization".
 function humanizeBostaTemplate(slug) {
   const words = String(slug).replace(/[-_](mail[-_])?template$/i, "").split(/[-_]/).filter(Boolean);
   const pretty = words.map(x => (/^(otp|rto|sms|cod|awb)$/i.test(x) ? x.toUpperCase() : x)).join(" ");
@@ -13403,6 +13406,7 @@ async function fetchBostaEmailsBetween(env, sinceMs, untilMs) {
 // Rewrites template-name stubs in place: the matching email's text when we can find it, a plain
 // English line when we can't - never the raw slug.
 async function resolveBostaTemplateStubs(env, list, alreadyFetched) {
+  const BOSTA_TEMPLATE_STUB = /^[a-z0-9]+(?:[-_][a-z0-9]+)*[-_](?:mail[-_])?template$/i;
   const stubs = list.filter(m => BOSTA_TEMPLATE_STUB.test((m.body_text || m.body || "").trim()));
   if (!stubs.length) return;
   const times = stubs.map(m => new Date(m.created_at || 0).getTime()).filter(Boolean);
