@@ -6929,7 +6929,12 @@ function startAppUpdate() {
   }
   clearInterval(appUpdateProgressTimer);
   const t0 = Date.now();
-  const guessMs = Math.max(20000, (Number(appUpdatePending.fileSize) || 32000000) / 900); // ~0.9 MB/s
+  // Paced from how long the LAST update actually took on this phone, so the bar finishes when the
+  // download does instead of crawling to the middle and jumping. A first run assumes normal wifi
+  // rather than the worst case.
+  const bytes = Number(appUpdatePending.fileSize) || 32000000;
+  const lastRate = Number(localStorage.getItem('app_update_bytes_per_ms')) || 0;
+  const guessMs = Math.max(4000, bytes / (lastRate > 0 ? lastRate : 3200)); // ~3.2 MB/s default
   appUpdateProgressTimer = setInterval(() => {
     // Time-based, so it starts moving on the very first tick no matter what the phone reports.
     const elapsed = Date.now() - t0;
@@ -6944,7 +6949,11 @@ function startAppUpdate() {
       pct.innerText = '100%';
       status.innerText = 'Opening the installer…';
       clearInterval(appUpdateProgressTimer);
-    } else if (elapsed > 20000) {
+      // Remembered so the next update's bar is paced by this phone's real speed.
+      if (real === 100 && elapsed > 1500) {
+        try { localStorage.setItem('app_update_bytes_per_ms', String(bytes / elapsed)); } catch (e) {}
+      }
+    } else if (elapsed > Math.max(20000, guessMs)) {
       status.innerText = sizeMb ? `Downloading ${sizeMb} MB… keep the app open` : 'Downloading… keep the app open';
     }
   }, 250);
@@ -6954,6 +6963,12 @@ function startAppUpdate() {
     if (document.visibilityState !== 'hidden') return;
     document.removeEventListener('visibilitychange', onHide);
     clearInterval(appUpdateProgressTimer);
+    // The installer taking focus is the true finish line on a build that reports no bytes, so the
+    // speed is learned from that too - otherwise the estimate never corrects itself.
+    const took = Date.now() - t0;
+    if (took > 1500) {
+      try { localStorage.setItem('app_update_bytes_per_ms', String((Number(appUpdatePending && appUpdatePending.fileSize) || 32000000) / took)); } catch (e) {}
+    }
     bar.style.width = '100%';
     pct.innerText = '100%';
     status.innerText = 'Installer opened - follow the prompt';
