@@ -6882,6 +6882,11 @@ async function checkForAppUpdate(loud) {
     // A skipped version stays skipped until a newer one is published - but a required update is
     // offered every launch regardless, and asking by hand overrides the skip.
     if (!loud && !latest.mandatory && localStorage.getItem('app_update_skipped') === String(latest.versionCode)) return;
+    // Already downloading or installing this one: the periodic check kept re-opening the prompt on
+    // top of the progress screen every few seconds, which read as the app nagging in a loop.
+    if (document.getElementById('appUpdatingOverlay')?.classList.contains('open')) return;
+    if (document.getElementById('appUpdateOverlay')?.classList.contains('open')) return;
+    if (!loud && sessionStorage.getItem('app_update_started') === String(latest.versionCode)) return;
     appUpdatePending = latest;
     document.getElementById('appUpdateVersionLine').innerText = `Version ${latest.versionName || latest.versionCode} · you have ${nativeAppVersionName() || mine}`;
     document.getElementById('appUpdateNotesLine').innerText = latest.notes || '';
@@ -6899,6 +6904,9 @@ function startAppUpdate() {
   const bridge = window.AndroidApkInstall;
   if (!bridge || typeof bridge.install !== 'function') { showToast('This build cannot update itself yet', true); return; }
   document.getElementById('appUpdateOverlay').classList.remove('open');
+  // Remembered for this session so the periodic check stops offering a version already being
+  // installed - the installer can take a while, and the prompt was reappearing over it.
+  try { sessionStorage.setItem('app_update_started', String(appUpdatePending.versionCode)); } catch (e) {}
   const sizeMb = appUpdatePending.fileSize ? (appUpdatePending.fileSize / 1048576).toFixed(0) : null;
   const status = document.getElementById('appUpdatingStatus');
   const bar = document.getElementById('appUpdatingBar');
