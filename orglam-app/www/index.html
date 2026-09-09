@@ -3398,6 +3398,7 @@
       <div id="appUpdatingBar" style="height:100%; width:0%; border-radius:99px; background:linear-gradient(90deg,#8fa06f,#cddab6); transition:width .35s ease;"></div>
     </div>
     <div id="appUpdatingPct" style="font-size:12px; color:rgba(255,255,255,0.5); margin-top:9px;">0%</div>
+    <div id="appUpdatingBuild" style="font-size:10px; color:rgba(255,255,255,0.35); margin-top:4px;">progress v3</div>
     <div style="font-size:11.5px; color:rgba(255,255,255,0.62); margin-top:22px; line-height:1.6;">Keep the app open until the installer appears.</div>
   </div>
 </div>
@@ -6918,39 +6919,27 @@ function startAppUpdate() {
     showToast('Could not start the update', true);
     return;
   }
-  // Real byte progress when the installed app reports it; otherwise a paced estimate, so the bar
-  // never sits frozen at 0% on a build whose bridge predates the progress hook.
   clearInterval(appUpdateProgressTimer);
-  let fake = 0;
-  let lastReal = null, lastRealAt = 0, useEstimate = false;
-  const started = Date.now();
+  const t0 = Date.now();
+  const guessMs = Math.max(20000, (Number(appUpdatePending.fileSize) || 32000000) / 900); // ~0.9 MB/s
   appUpdateProgressTimer = setInterval(() => {
-    let p = null;
-    try { if (typeof bridge.progress === 'function') p = Number(bridge.progress()); } catch (e) {}
-    const real = p != null && !isNaN(p) && p >= 0;
-    // A build whose bridge reports a flat 0 (no Content-Length to measure against) would otherwise
-    // sit at 0% and then jump straight to done. Two seconds of no movement is taken as "this number
-    // isn't telling me anything" and the estimate takes over.
-    if (real) {
-      if (lastReal === null || p !== lastReal) { lastReal = p; lastRealAt = Date.now(); }
-      else if (Date.now() - lastRealAt > 2000 && p < 1) useEstimate = true;
-      if (p > 1) useEstimate = false;
-    }
-    if (!real || useEstimate) {
-      // Eases towards 95% - the installer handshake finishes the rest.
-      fake = Math.min(95, fake + Math.max(0.6, (95 - fake) * 0.04));
-      p = Math.max(fake, real ? p : 0);
-    }
-    bar.style.width = p + '%';
+    // Time-based, so it starts moving on the very first tick no matter what the phone reports.
+    const elapsed = Date.now() - t0;
+    let p = 95 * (1 - Math.exp(-2.2 * (elapsed / guessMs)));
+    let real = null;
+    try { if (typeof bridge.progress === 'function') real = Number(bridge.progress()); } catch (e) {}
+    if (real != null && !isNaN(real) && real > p) p = Math.min(100, real); // real data only ever helps
+    bar.style.width = p.toFixed(1) + '%';
     pct.innerText = Math.round(p) + '%';
-    if (p >= 99.5) {
-      status.innerText = 'Opening the installer…';
+    if (real === 100 || p >= 99.5) {
+      bar.style.width = '100%';
       pct.innerText = '100%';
+      status.innerText = 'Opening the installer…';
       clearInterval(appUpdateProgressTimer);
-    } else if (Date.now() - started > 15000) {
+    } else if (elapsed > 20000) {
       status.innerText = sizeMb ? `Downloading ${sizeMb} MB… keep the app open` : 'Downloading… keep the app open';
     }
-  }, 400);
+  }, 250);
   // Android's installer sheet takes focus, which is the one reliable signal that the download
   // finished on a build with no progress hook.
   const onHide = () => {
