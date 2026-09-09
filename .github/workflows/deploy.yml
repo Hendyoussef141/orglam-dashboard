@@ -91,11 +91,21 @@ jobs:
       # sync, not copy: the capacitor-cordova-android-plugins folder isn't in the repo (it's
       # generated), and copy alone leaves gradle looking for a cordova.variables.gradle that
       # doesn't exist. sync regenerates it and then copies the web assets.
+      # node_modules cached outright: `npm ci` deletes and reinstalls it on every run otherwise,
+      # which is ~20s for a dependency set that almost never changes.
+      - name: Cache node_modules
+        if: steps.changed.outputs.app == 'true'
+        uses: actions/cache@v4
+        with:
+          path: orglam-app/node_modules
+          key: node-modules-${{ hashFiles('orglam-app/package-lock.json') }}
+
       - name: Bundle the dashboard into the app
         if: steps.changed.outputs.app == 'true'
         run: |
           cd orglam-app
-          npm ci || npm install
+          # Skips the reinstall entirely when the cache above restored a matching tree.
+          [ -d node_modules ] || npm ci || npm install
           npx cap sync android
 
       # Git does not carry the executable bit through Windows, so gradlew arrives unrunnable here
@@ -125,8 +135,9 @@ jobs:
           ORGLAM_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ORGLAM_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         # --build-cache reuses compiled output across runs; --parallel and the configuration cache
-        # cut the rest. The daemon stays off - a fresh runner has none to reuse.
-        run: ./gradlew assembleRelease --no-daemon --build-cache --parallel --configuration-cache
+        # cut the rest. Lint is excluded - it runs automatically on a release build and is the
+        # single slowest task here, while checking source that a person already reviewed.
+        run: ./gradlew assembleRelease --no-daemon --build-cache --parallel --configuration-cache -x lint -x lintVitalRelease -x lintVitalAnalyzeRelease
 
       - name: Publish to every phone
         if: steps.changed.outputs.app == 'true'
