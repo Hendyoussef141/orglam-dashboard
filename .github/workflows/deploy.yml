@@ -115,7 +115,9 @@ jobs:
             -F 'metadata=@metadata.json;type=application/json' \
             -F 'worker.js=@worker.js;type=application/javascript+module')
           echo "$RESP"
-          echo "$RESP" | grep -q '"success":true' || {
+          # Whitespace-tolerant on purpose: Cloudflare pretty-prints the response, so a literal
+          # '"success":true' match failed on a deploy that had in fact worked.
+          echo "$RESP" | tr -d ' \n' | grep -q '"success":true' || {
             echo "The upload failed - the reason is above. The old worker is still live."
             exit 1
           }
