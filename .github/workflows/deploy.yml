@@ -66,10 +66,25 @@ jobs:
           NAME=$(sed -nE 's/^name *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
           curl -sS "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$NAME/settings" \
             -H "Authorization: Bearer $CF_TOKEN" > before.json
-          grep -o '"name":"[^"]*"' before.json | sort -u > before.txt || true
-          echo "The live worker currently has these bindings:"
-          cat before.txt
-          test -s before.txt || { echo "Could not read the worker's bindings - refusing to deploy blind."; exit 1; }
+          # Parsed properly, and NAMES ONLY - a plain-text variable's value must never be printed
+          # into a build log.
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("before.json"))
+          if not d.get("success"):
+              print("Cloudflare refused the request:")
+              print(json.dumps(d.get("errors") or d, indent=2)[:2000])
+              print("The token needs Account -> Workers Scripts -> Edit. Nothing was deployed.")
+              sys.exit(1)
+          b = (d.get("result") or {}).get("bindings") or []
+          names = sorted(f"{x.get('name')} ({x.get('type')})" for x in b)
+          print("The live worker currently has these bindings:")
+          for n in names: print(" ", n)
+          open("before.txt", "w").write("\n".join(sorted(str(x.get("name")) for x in b)))
+          if not names:
+              print("It reports NO bindings at all, which cannot be right - refusing to deploy blind.")
+              sys.exit(1)
+          PY
 
       # compatibility_date is read from wrangler.toml so there is only one copy of it, and it is
       # the only thing the upload declares besides the code itself.
@@ -117,16 +132,21 @@ jobs:
           NAME=$(sed -nE 's/^name *= *"([^"]+)".*/\1/p' wrangler.toml | head -1)
           curl -sS "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/$NAME/settings" \
             -H "Authorization: Bearer $CF_TOKEN" > after.json
-          grep -o '"name":"[^"]*"' after.json | sort -u > after.txt || true
-          MISSING=$(comm -23 before.txt after.txt)
-          if [ -n "$MISSING" ]; then
-            echo "These bindings existed before the deploy and are gone now:"
-            echo "$MISSING"
-            echo "Roll back immediately: run rollback-worker.bat, or Cloudflare dashboard ->"
-            echo "Workers -> dawn-king-6cc3 -> Deployments -> the previous version -> Rollback."
-            exit 1
-          fi
-          echo "All $(wc -l < before.txt) bindings survived the deploy."
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("after.json"))
+          b = (d.get("result") or {}).get("bindings") or []
+          after = set(str(x.get("name")) for x in b)
+          before = set(l for l in open("before.txt").read().split("\n") if l)
+          missing = sorted(before - after)
+          if missing:
+              print("These bindings existed before the deploy and are gone now:")
+              for m in missing: print(" ", m)
+              print("Roll back NOW: run rollback-worker.bat, or Cloudflare dashboard ->")
+              print("Workers -> dawn-king-6cc3 -> Deployments -> previous version -> Rollback.")
+              sys.exit(1)
+          print(f"All {len(before)} bindings survived the deploy.")
+          PY
 
       # The 1-minute cron drives every scheduled job. Uploading code does not touch triggers, but
       # re-asserting the schedule is idempotent and means the repo is the record of it.
