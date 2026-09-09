@@ -13,7 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       # wrangler expects the entrypoint named in wrangler.toml (main = "worker.js"). The worker
       # itself is kept under whichever readable name it already has in the repo, so both are
       # accepted rather than forcing a rename.
@@ -40,28 +39,69 @@ jobs:
   android:
     name: Android build + publish
     runs-on: ubuntu-latest
-    # Never publishes an APK the worker deploy hasn't accepted first.
-    needs: worker
+    # Runs alongside the worker deploy rather than after it: the two are independent, and waiting
+    # added ~25s to every run for nothing.
     # Signing secrets are what make an installable build; without them this job would produce an
     # unsigned APK that no phone accepts, so it is skipped instead of failing every push.
     if: ${{ github.event_name == 'workflow_dispatch' || vars.BUILD_ANDROID == 'true' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # needs the previous commit to see what changed
+
+      # A push that only touched the worker, a .bat file or docs cannot change the APK, so the
+      # whole 3-minute build is skipped for it.
+      - name: Does this push change the app?
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "app=true" >> $GITHUB_OUTPUT; exit 0
+          fi
+          FILES=$(git diff --name-only HEAD^ HEAD || echo "")
+          echo "$FILES"
+          if echo "$FILES" | grep -qE '^orglam-app/|^\.github/workflows/'; then
+            echo "app=true" >> $GITHUB_OUTPUT
+          else
+            echo "app=false" >> $GITHUB_OUTPUT
+            echo "Nothing under orglam-app/ changed - skipping the Android build."
+          fi
 
       - uses: actions/setup-java@v4
+        if: steps.changed.outputs.app == 'true'
         with:
           distribution: temurin
           java-version: '21'   # Gradle 8 needs 17-24; 25 fails with "class file major version 69"
+          cache: gradle        # Gradle wrapper + dependency cache: most of the 3.5 min was re-downloading these
 
       - uses: actions/setup-node@v4
+        if: steps.changed.outputs.app == 'true'
         with:
           node-version: '22'   # the Capacitor CLI refuses to run on anything below 22
+          cache: npm
+          cache-dependency-path: orglam-app/package-lock.json
+
+      # Compiled classes and the Gradle daemon's build cache, keyed on the gradle files - a run that
+      # changes only the dashboard then recompiles almost nothing.
+      - name: Cache the Android build
+        if: steps.changed.outputs.app == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            orglam-app/android/.gradle
+            orglam-app/android/build
+            orglam-app/android/app/build
+          key: android-${{ hashFiles('orglam-app/android/**/*.gradle', 'orglam-app/android/gradle/wrapper/gradle-wrapper.properties', 'orglam-app/package-lock.json') }}
+          restore-keys: |
+            android-
 
       # The version number must be a real, rising integer compiled INTO the apk - the phones compare
       # it against their own installed versionCode. The run number gives that for free and never
       # repeats.
       - name: Set the version number
         id: ver
+        if: steps.changed.outputs.app == 'true'
         run: |
           VER=$(( ${{ github.run_number }} + 100 ))
           echo "code=$VER" >> $GITHUB_OUTPUT
@@ -72,6 +112,7 @@ jobs:
       # generated), and copy alone leaves gradle looking for a cordova.variables.gradle that
       # doesn't exist. sync regenerates it and then copies the web assets.
       - name: Bundle the dashboard into the app
+        if: steps.changed.outputs.app == 'true'
         run: |
           cd orglam-app
           npm ci || npm install
@@ -80,11 +121,13 @@ jobs:
       # Git does not carry the executable bit through Windows, so gradlew arrives unrunnable here
       # and the build dies immediately with "Permission denied".
       - name: Make gradlew executable
+        if: steps.changed.outputs.app == 'true'
         run: chmod +x orglam-app/android/gradlew
 
       # The same keystore the installed app was signed with, stored as a base64 secret - a build
       # signed with a different key cannot install over what is already on people's phones.
       - name: Restore the signing keystore
+        if: steps.changed.outputs.app == 'true'
         run: |
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | tr -d '[:space:]' | base64 -d > orglam-app/android/app/release.jks
           # An empty or malformed keystore would produce an unsigned APK that quietly fails to
@@ -95,14 +138,18 @@ jobs:
           fi
 
       - name: Build the release APK
+        if: steps.changed.outputs.app == 'true'
         working-directory: orglam-app/android
         env:
           ORGLAM_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           ORGLAM_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ORGLAM_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease --no-daemon
+        # --build-cache reuses compiled output across runs; --parallel and the configuration cache
+        # cut the rest. The daemon stays off - a fresh runner has none to reuse.
+        run: ./gradlew assembleRelease --no-daemon --build-cache --parallel --configuration-cache
 
       - name: Publish to every phone
+        if: steps.changed.outputs.app == 'true'
         run: |
           APK=$(find orglam-app/android/app/build/outputs/apk/release -name "*.apk" | head -1)
           if [ -z "$APK" ]; then echo "No APK was produced."; exit 1; fi

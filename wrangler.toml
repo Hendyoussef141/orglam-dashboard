@@ -2,6 +2,11 @@ name = "dawn-king-6cc3"
 main = "worker.js"
 compatibility_date = "2025-01-01"
 
+# Without this, deploying replaces the worker's variables with whatever is in this file - which
+# wiped the plain-text ones set in the Cloudflare dashboard (Shopify, Amazon, Noon, Gmail...) and
+# left every number on the dashboard at zero. keep_vars leaves them alone.
+keep_vars = true
+
 # The 1-minute Cron Trigger the scheduled() handler relies on (cronDue() derives every other
 # interval from the clock, so this single trigger drives all the jobs).
 [triggers]
