@@ -402,6 +402,25 @@
     el.style.setProperty('z-index', window.__screenZCounter, 'important');
     el.classList.add('open');
   };
+  // The update prompt is not optional, so the dashboard behind it must not be usable: scrolling
+  // it made the popup feel dismissable. The To-do screen is in the same list because its glass
+  // background is translucent - the dashboard scrolling behind it is visible straight through.
+  // Watched rather than hooked into the open/close call sites, which are spread across the file.
+  window.addEventListener('load', function() {
+    const ids = ['appUpdateOverlay', 'todosScreen'];
+    const els = ids.map(id => document.getElementById(id)).filter(Boolean);
+    if (!els.length) return;
+    const sync = () => {
+      const locked = els.some(el => el.classList.contains('open'));
+      // touch-action is inherited, so setting it on the body would kill panning inside the
+      // To-do list itself. Only the update prompt, which has nothing scrollable in it, gets it.
+      const hardLock = document.getElementById('appUpdateOverlay')?.classList.contains('open');
+      document.body.style.overflow = locked ? 'hidden' : '';
+      document.body.style.touchAction = hardLock ? 'none' : '';
+    };
+    els.forEach(el => new MutationObserver(sync).observe(el, { attributes: true, attributeFilter: ['class'] }));
+    sync();
+  });
   // Safety net: if a screen was ever left "open" without its class being
   // removed (e.g. user backgrounded the app or used the OS back gesture
   // instead of the in-app back button), it can sit on top of everything
@@ -1056,7 +1075,7 @@
   <div class="dashboard-grain"></div>
   <div class="header">
     <div>
-      <div class="brand"><span class="brand-mark">orglam</span><span class="brand-dot"></span></div>
+      <div class="brand"><img src="assets/orglam-logo-header.png" alt="Orglam" style="height:48px; width:auto; display:block;"></div>
       <div class="header-sub">Business overview</div>
     </div>
     <div style="display:flex; align-items:center; gap:12px;">
@@ -2621,7 +2640,7 @@
 
       <div id="warehouseBatchList" style="margin:4px 0 10px;"></div>
 
-      <select id="warehouseOrg" class="bazaar-input"><option value="">Select organization / supplier</option></select>
+      <select id="warehouseOrg" class="bazaar-input" onchange="onWarehouseOrgChange()"><option value="">Select organization / supplier</option></select>
       <input type="date" id="warehouseDate" class="bazaar-input">
       <input type="text" id="warehouseNote" class="bazaar-input" placeholder="Note (optional) — e.g. 'From Coty Moty Bazaar'">
 
@@ -3299,22 +3318,16 @@
   </div>
 </div>
 
-<div class="screen" id="todosScreen" style="background:linear-gradient(165deg, #1b2419 0%, #263528 45%, #17201a 100%); overflow:hidden;">
-  <div style="position:absolute; inset:0; overflow:hidden; pointer-events:none; z-index:0;">
-    <div style="position:absolute; top:-60px; left:-40px; width:220px; height:220px; border-radius:50%; background:radial-gradient(circle, rgba(191,214,167,0.35), transparent 70%); filter:blur(10px); animation: eloraBlobFloat1 14s ease-in-out infinite;"></div>
-    <div style="position:absolute; bottom:220px; right:-50px; width:260px; height:260px; border-radius:50%; background:radial-gradient(circle, rgba(230,204,143,0.22), transparent 70%); filter:blur(14px); animation: eloraBlobFloat2 18s ease-in-out infinite;"></div>
-  </div>
-  <div style="position:absolute; inset:0; z-index:1; pointer-events:none; backdrop-filter:blur(6.3px); -webkit-backdrop-filter:blur(6.3px); background:rgba(255,255,255,0.0135);"></div>
+<div class="screen" id="todosScreen" style="background:rgba(26,34,25,0.21); backdrop-filter:blur(60px) saturate(100%) brightness(0.9); -webkit-backdrop-filter:blur(60px) saturate(100%) brightness(0.9); overflow:hidden;">
   <div class="screen-header" style="position:relative; z-index:2; display:flex; align-items:center; gap:14px; padding:calc(14px + env(safe-area-inset-top)) 20px 16px;">
     <button onclick="closeTodos()" style="width:36px; height:36px; min-width:36px; border-radius:50%; flex-shrink:0; color:#fff; cursor:pointer; background:rgba(255,255,255,0.14); backdrop-filter:blur(20px) saturate(180%); -webkit-backdrop-filter:blur(20px) saturate(180%); border:1px solid rgba(255,255,255,0.28); box-shadow:0 4px 14px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.4); font-size:15px;">←</button>
     <div class="screen-title" style="color:#fff; font-size:22px; text-shadow:0 1px 3px rgba(0,0,0,0.22);">To-do</div>
-    <button onclick="todoListMenu()" aria-label="More" style="margin-left:auto; width:36px; height:36px; min-width:36px; border-radius:50%; flex-shrink:0; background:rgba(255,255,255,0.14); border:1px solid rgba(255,255,255,0.28); color:#fff; font-size:17px; cursor:pointer; box-shadow:inset 0 1px 0 rgba(255,255,255,0.35);">⋯</button>
   </div>
   <div style="position:relative; z-index:2; padding:0 20px 4px; display:flex; gap:8px;">
     <input type="text" id="todoNewTaskInput" placeholder="Add a task…" onkeydown="if(event.key==='Enter')addTodoTask()" style="flex:1; min-width:0; padding:13px 15px; border-radius:14px; font-size:14px; color:#fff; background:rgba(255,255,255,0.12); backdrop-filter:blur(24px) saturate(180%); -webkit-backdrop-filter:blur(24px) saturate(180%); border:1px solid rgba(255,255,255,0.22); box-shadow:inset 0 1px 0 rgba(255,255,255,0.28);">
     <button onclick="addTodoTask()" style="flex-shrink:0; padding:0 20px; min-height:48px; border-radius:14px; background:rgba(255,255,255,0.2); backdrop-filter:blur(24px) saturate(180%); -webkit-backdrop-filter:blur(24px) saturate(180%); border:1px solid rgba(255,255,255,0.34); color:#fff; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.4);">Add</button>
   </div>
-  <div id="todoTasksWrap" style="position:relative; z-index:2; flex:1; min-height:0; overflow-y:auto; padding:14px 20px 28px;"></div>
+  <div id="todoTasksWrap" style="position:relative; z-index:2; flex:1; min-height:0; overflow-y:auto; touch-action:pan-y; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; padding:14px 20px 28px;"></div>
 </div>
 
 <div class="screen" id="appUpdateScreen">
@@ -5937,8 +5950,17 @@ function populateWarehouseOrgDatalist() {
     if (!sel) return;
     const current = sel.value;
     const orgs = [...new Set([...warehouseOrgs, ...warehouseLog.map(e => (e.org || '').trim())].filter(Boolean))].sort();
-    sel.innerHTML = `<option value="">Select organization / supplier</option>` + orgs.map(o => `<option value="${o.replace(/"/g, '&quot;')}">${o}</option>`).join('');
+    sel.innerHTML = `<option value="">Select organization / supplier</option>` + orgs.map(o => `<option value="${o.replace(/"/g, '&quot;')}">${o}</option>`).join('') + `<option value="__new__">+ Add a new supplier...</option>`;
     if (orgs.includes(current)) sel.value = current;
+}
+
+// Picking the last option adds a supplier without leaving the inbound/outbound form, and selects
+// it straight away - the trip to the Organizations tab lost whatever was half-typed here.
+function onWarehouseOrgChange() {
+    const sel = document.getElementById('warehouseOrg');
+    if (!sel || sel.value !== '__new__') return;
+    sel.value = '';
+    addWarehouseOrg();
 }
 
 function addWarehouseOrg() {
@@ -5947,10 +5969,19 @@ function addWarehouseOrg() {
         name = name.trim();
         if (!name) return;
         const exists = warehouseOrgs.some(o => String(o || '').toLowerCase() === String(name || '').toLowerCase()) || warehouseLog.some(e => (e.org || '').trim().toLowerCase() === name.toLowerCase());
-        if (exists) { showToast('That organization already exists'); return; }
+        if (exists) {
+            showToast('That organization already exists');
+            // Still select it - asked for from the inbound form, the intent is "use this supplier".
+            const selExisting = document.getElementById('warehouseOrg');
+            if (selExisting) { populateWarehouseOrgDatalist(); selExisting.value = [...selExisting.options].find(o => o.value.toLowerCase() === name.toLowerCase())?.value || ''; }
+            return;
+        }
         warehouseOrgs.push(name);
         saveData();
         populateWarehouseOrgDatalist();
+        // Selected for you: adding a supplier mid-form means you are about to log against it.
+        const sel = document.getElementById('warehouseOrg');
+        if (sel) sel.value = name;
         renderWarehouseOrgsList();
         showToast('Organization added');
     });
@@ -6156,10 +6187,10 @@ function getWarehouseItemUnitPrice(item) {
     if (item.newPrice != null) return item.newPrice;
     const { category, itemName } = item;
     let match;
-    if (category === 'material') match = materials.find(m => String(m && m.name || '').toLowerCase() === String(itemName || '').toLowerCase());
-    else if (category === 'packaging') match = packaging.find(p => String(p && p.name || '').toLowerCase() === String(itemName || '').toLowerCase());
-    else if (category === 'sticker') match = stickers.find(s => String(s && s.name || '').toLowerCase() === String(itemName || '').toLowerCase());
-    else if (category === 'box') match = cardboardBoxes.find(b => String(b && b.name || '').toLowerCase() === String(itemName || '').toLowerCase());
+    if (category === 'material') match = findByItemName(materials, itemName);
+    else if (category === 'packaging') match = findByItemName(packaging, itemName);
+    else if (category === 'sticker') match = findByItemName(stickers, itemName);
+    else if (category === 'box') match = findByItemName(cardboardBoxes, itemName);
     else match = allProducts.find(p => String(p.title || '').toLowerCase() === String(itemName || '').toLowerCase()) || findProductByName(itemName);
     const price = match && match.price != null ? parseFloat(match.price) : null;
     return isNaN(price) ? null : price;
@@ -6207,10 +6238,36 @@ function renderWarehouseBatchList() {
     const el = document.getElementById('warehouseBatchList');
     if (warehouseBatchItems.length === 0) { el.innerHTML = ''; return; }
     el.innerHTML = warehouseBatchItems.map((item, idx) => `
-        <div style="display:flex; align-items:center; justify-content:space-between; background:var(--sage-pale); border-radius:10px; padding:8px 12px; margin-bottom:6px;">
-            <div style="font-size:12px;"><strong>${item.qty}x</strong> ${item.itemName}${item.receivedQty != null && item.receivedQty !== item.qty ? ` <span style="color:#854d0e; font-weight:600;">(${item.receivedQty} received)</span>` : ''} <span style="color:var(--ink-soft);">· ${WAREHOUSE_CATEGORY_LABELS[item.category]}</span>${item.newUnitPrice != null ? ` <span style="color:var(--sage-deep); font-weight:600;">· new price ${item.newUnitPrice.toFixed(2)}/unit</span>` : ''}</div>
-            <button onclick="removeWarehouseBatchItem(${idx})" style="background:none; border:none; color:#e11d48; cursor:pointer; font-size:14px; padding:0 4px;">✕</button>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:var(--sage-pale); border-radius:10px; padding:8px 12px; margin-bottom:6px;">
+            <div style="flex:1; min-width:120px; font-size:12px;">${item.itemName} <span style="color:var(--ink-soft);">· ${WAREHOUSE_CATEGORY_LABELS[item.category]}</span></div>
+            <div style="display:flex; align-items:center; gap:6px;">
+                <input type="number" step="any" value="${item.qty}" onchange="updateWarehouseBatchItem(${idx}, 'qty', this.value)" aria-label="Quantity" title="Quantity" style="width:70px; padding:6px 8px; border:1px solid rgba(0,0,0,0.12); border-radius:8px; font-size:12px; background:rgba(255,255,255,0.8);">
+                <input type="number" step="any" value="${item.receivedQty != null ? item.receivedQty : ''}" placeholder="recv" onchange="updateWarehouseBatchItem(${idx}, 'receivedQty', this.value)" aria-label="Quantity received" title="Quantity actually received" style="width:66px; padding:6px 8px; border:1px solid rgba(0,0,0,0.12); border-radius:8px; font-size:12px; background:rgba(255,255,255,0.8);">
+                <input type="number" step="any" value="${item.newUnitPrice != null ? item.newUnitPrice : ''}" placeholder="price" onchange="updateWarehouseBatchItem(${idx}, 'newUnitPrice', this.value)" aria-label="New unit price" title="New price per unit" style="width:76px; padding:6px 8px; border:1px solid rgba(0,0,0,0.12); border-radius:8px; font-size:12px; background:rgba(255,255,255,0.8);">
+                <button onclick="removeWarehouseBatchItem(${idx})" style="background:none; border:none; color:#e11d48; cursor:pointer; font-size:14px; padding:0 4px;">✕</button>
+            </div>
         </div>`).join('');
+}
+
+// Queued items are editable in place: a wrong quantity or price used to mean removing the line
+// and searching for the item again. Values are written straight into the queue without a
+// re-render, so the field being typed in keeps focus.
+function updateWarehouseBatchItem(idx, field, value) {
+    const item = warehouseBatchItems[idx];
+    if (!item) return;
+    const num = parseFloat(value);
+    if (field === 'qty') {
+        if (!isFinite(num) || num <= 0) { showToast('Quantity has to be more than zero'); renderWarehouseBatchList(); return; }
+        item.qty = num;
+        // A received qty that was tracking the ordered qty keeps doing so.
+        if (item.receivedQty != null && item.receivedQty > num) item.receivedQty = num;
+    } else if (field === 'receivedQty') {
+        // Blank means "all of it arrived", which is what null records.
+        item.receivedQty = String(value).trim() === '' ? null : Math.max(0, isFinite(num) ? num : 0);
+    } else if (field === 'newUnitPrice') {
+        item.newUnitPrice = String(value).trim() === '' ? null : (isFinite(num) && num >= 0 ? num : null);
+    }
+    refreshWarehouseUI();
 }
 
 function handleReceiptPhotoSelected(event) {
@@ -6287,22 +6344,22 @@ async function submitWarehouseMovement() {
             const { category, itemName, qty, receivedQty, newUnitPrice } = item;
             const stockQty = receivedQty != null ? receivedQty : qty; // only what actually arrived/left moves real stock
             if (category === 'material') {
-                const mat = materials.find(m => String(m && m.name || '').toLowerCase() === String(itemName || '').toLowerCase());
+                const mat = findByItemName(materials, itemName);
                 if (!mat) { showToast(`No material named "${itemName}" found anymore. Skipped.`); continue; }
                 mat.stock = Math.max(0, (parseFloat(mat.stock) || 0) + delta(stockQty));
                 if (newUnitPrice != null) { item.oldPrice = mat.price != null ? parseFloat(mat.price) : null; mat.prevPrice = item.oldPrice; mat.price = newUnitPrice; item.newPrice = newUnitPrice; }
             } else if (category === 'packaging') {
-                const pack = packaging.find(p => String(p && p.name || '').toLowerCase() === String(itemName || '').toLowerCase());
+                const pack = findByItemName(packaging, itemName);
                 if (!pack) { showToast(`No packaging named "${itemName}" found anymore. Skipped.`); continue; }
                 pack.stock = Math.max(0, (parseFloat(pack.stock) || 0) + delta(stockQty));
                 if (newUnitPrice != null) { item.oldPrice = pack.price != null ? parseFloat(pack.price) : null; pack.prevPrice = item.oldPrice; pack.price = newUnitPrice; item.newPrice = newUnitPrice; }
             } else if (category === 'sticker') {
-                const sticker = stickers.find(s => String(s && s.name || '').toLowerCase() === String(itemName || '').toLowerCase());
+                const sticker = findByItemName(stickers, itemName);
                 if (!sticker) { showToast(`No sticker named "${itemName}" found anymore. Skipped.`); continue; }
                 sticker.stock = Math.max(0, (parseFloat(sticker.stock) || 0) + delta(stockQty));
                 if (newUnitPrice != null) { item.oldPrice = sticker.price != null ? parseFloat(sticker.price) : null; sticker.prevPrice = item.oldPrice; sticker.price = newUnitPrice; item.newPrice = newUnitPrice; }
             } else if (category === 'box') {
-                const box = cardboardBoxes.find(b => String(b && b.name || '').toLowerCase() === String(itemName || '').toLowerCase());
+                const box = findByItemName(cardboardBoxes, itemName);
                 if (!box) { showToast(`No box type named "${itemName}" found anymore. Skipped.`); continue; }
                 box.stock = Math.max(0, (parseFloat(box.stock) || 0) + delta(stockQty));
                 if (newUnitPrice != null) { item.oldPrice = box.price != null ? parseFloat(box.price) : null; box.prevPrice = item.oldPrice; box.price = newUnitPrice; item.newPrice = newUnitPrice; }
@@ -6653,13 +6710,20 @@ async function updateWarehouseLogItemReceived(index, itemIndex, value) {
 
 // Writes a new item's locked-in unit price back onto the live material/packaging/sticker/box
 // record (Shopify products manage their own price elsewhere, so skipped for those).
+// Names typed on a receipt and names stored on a material/packaging/sticker/box record were
+// compared with toLowerCase() alone: a stored "Coconut argivile " with one stray space never
+// matched the identical-looking receipt line, and the item was reported missing and skipped.
+// Normalised on both sides instead - trimmed, inner runs of whitespace collapsed, lowercased.
+function normItemName(s) { return String(s == null ? '' : s).trim().replace(/\s+/g, ' ').toLowerCase(); }
+function findByItemName(list, name) { const n = normItemName(name); return (list || []).find(x => normItemName(x && x.name) === n); }
+
 function applyWarehouseItemPriceUpdate(item) {
     const { category, itemName, newPrice } = item;
     let match;
-    if (category === 'material') match = materials.find(m => String(m && m.name || '').toLowerCase() === String(itemName || '').toLowerCase());
-    else if (category === 'packaging') match = packaging.find(p => String(p && p.name || '').toLowerCase() === String(itemName || '').toLowerCase());
-    else if (category === 'sticker') match = stickers.find(s => String(s && s.name || '').toLowerCase() === String(itemName || '').toLowerCase());
-    else if (category === 'box') match = cardboardBoxes.find(b => String(b && b.name || '').toLowerCase() === String(itemName || '').toLowerCase());
+    if (category === 'material') match = findByItemName(materials, itemName);
+    else if (category === 'packaging') match = findByItemName(packaging, itemName);
+    else if (category === 'sticker') match = findByItemName(stickers, itemName);
+    else if (category === 'box') match = findByItemName(cardboardBoxes, itemName);
     if (match) { match.prevPrice = match.price != null ? parseFloat(match.price) : null; match.price = newPrice; }
 }
 
@@ -6671,19 +6735,19 @@ async function applyWarehouseItemQtyDelta(entry, item, qtyDelta) {
     const signedDelta = entry.direction === 'in' ? qtyDelta : -qtyDelta;
     const { category, itemName } = item;
     if (category === 'material') {
-        const mat = materials.find(m => m.name.trim().toLowerCase() === itemName.trim().toLowerCase());
+        const mat = findByItemName(materials, itemName);
         if (!mat) { showToast(`No material named "${itemName}" found - stock not updated for it`, true); return false; }
         mat.stock = Math.max(0, (parseFloat(mat.stock) || 0) + signedDelta);
     } else if (category === 'packaging') {
-        const pack = packaging.find(p => p.name.trim().toLowerCase() === itemName.trim().toLowerCase());
+        const pack = findByItemName(packaging, itemName);
         if (!pack) { showToast(`No packaging named "${itemName}" found - stock not updated for it`, true); return false; }
         pack.stock = Math.max(0, (parseFloat(pack.stock) || 0) + signedDelta);
     } else if (category === 'sticker') {
-        const sticker = stickers.find(s => s.name.trim().toLowerCase() === itemName.trim().toLowerCase());
+        const sticker = findByItemName(stickers, itemName);
         if (!sticker) { showToast(`No sticker named "${itemName}" found - stock not updated for it`, true); return false; }
         sticker.stock = Math.max(0, (parseFloat(sticker.stock) || 0) + signedDelta);
     } else if (category === 'box') {
-        const box = cardboardBoxes.find(b => b.name.trim().toLowerCase() === itemName.trim().toLowerCase());
+        const box = findByItemName(cardboardBoxes, itemName);
         if (!box) { showToast(`No box type named "${itemName}" found - stock not updated for it`, true); return false; }
         box.stock = Math.max(0, (parseFloat(box.stock) || 0) + signedDelta);
     } else {
@@ -6815,18 +6879,50 @@ async function saveWarehouseLogEntryEdit(index) {
     renderWarehouseLogDetails(index, false);
 }
 
+// Deleting a record used to leave the stock it had added behind, so a duplicate receipt could be
+// removed from the list while the quantities stayed overstated. The choice is explicit now,
+// because both answers are legitimate: a mistaken entry should take its stock back out, while a
+// record deleted for tidiness (already corrected by hand) should not.
 function deleteWarehouseLogEntry(index) {
+    const entry = warehouseLog[index];
+    if (!entry) return;
+    const inbound = entry.direction === 'in';
+    showActionSheet(
+        actionSheetButton(inbound ? 'Delete + remove its stock' : 'Delete + add its stock back', '#991b1b', 'white', `closeActionSheet(); confirmDeleteWarehouseLogEntry(${index}, true)`) +
+        actionSheetButton('Delete record only', 'rgba(0,0,0,0.06)', 'var(--ink)', `closeActionSheet(); confirmDeleteWarehouseLogEntry(${index}, false)`) +
+        actionSheetButton('Cancel', 'var(--paper)', 'var(--ink)', 'closeActionSheet()')
+    );
+}
+
+function confirmDeleteWarehouseLogEntry(index, reverseStock) {
     const entry = warehouseLog[index];
     if (!entry) return;
     customPrompt('Enter password to delete this record', true).then(async entered => {
         if (entered === null || entered === undefined) return;
         if (entered !== 'jesus2025') { showToast('Incorrect password', true); return; }
+        // Stock first: if this fails there is still a record on screen explaining what happened,
+        // rather than a vanished record and quantities nobody can trace.
+        if (reverseStock) {
+            const failed = [];
+            for (const item of (entry.items || [])) {
+                // The received qty is what actually moved stock; it falls back to the ordered qty
+                // for older records that never had one.
+                const moved = parseFloat(item.receivedQty != null ? item.receivedQty : item.qty) || 0;
+                if (!moved) continue;
+                const ok = await applyWarehouseItemQtyDelta(entry, item, -moved);
+                if (!ok) failed.push(item.itemName);
+            }
+            if (failed.length) {
+                showToast(`Could not reverse stock for: ${failed.join(', ')} - nothing was deleted`, true);
+                return;
+            }
+        }
         // Remove ALL local copies sharing this loggedAt (not just this index) - a save race can
         // have left a duplicate under the same identity, and the server-side delete below removes
         // every match too; leaving one behind locally would just get re-synced back up.
         if (entry.loggedAt) warehouseLog = warehouseLog.filter(e => e.loggedAt !== entry.loggedAt);
         else warehouseLog.splice(index, 1);
-        logActivity(`Deleted a warehouse ${entry.direction === 'in' ? 'inbound' : 'outbound'} record`);
+        logActivity(`Deleted a warehouse ${entry.direction === 'in' ? 'inbound' : 'outbound'} record${reverseStock ? ' and reversed its stock' : ' (stock left unchanged)'}`);
         // Deletes directly on the server by matching loggedAt, instead of a full-blob saveData()
         // overwrite - a full overwrite can lose this delete if another tab/device's background
         // sync (polling, etc.) pushes its own stale snapshot back around the same time.
@@ -6844,8 +6940,12 @@ function deleteWarehouseLogEntry(index) {
         } else {
             saveData(); // legacy entry with no loggedAt to match on - fall back to full-blob save
         }
+        // The reversed material/packaging/sticker/box quantities live in the shared blob, so they
+        // need a save of their own - the targeted delete above only removes the log entry.
+        if (reverseStock && entry.loggedAt) saveData();
         document.getElementById('warehouseLogDetailsScreen').classList.remove('open');
         renderWarehouseLog();
+        if (reverseStock) showToast(entry.direction === 'in' ? 'Record deleted and its stock removed' : 'Record deleted and its stock added back');
     });
 }
 
@@ -14266,6 +14366,11 @@ function deriveShipmentIdFromBoxId(boxId) {
       }
       // Putting the items back on the shelf is separate work from receiving the package, so it can
       // be deferred: "later" parks the order in Returns > Awaiting Stock until someone picks it up.
+      // The thread screen is closed BEFORE the question, not after: left open it re-fetches and
+      // re-renders the conversation every 2s underneath three stacked blur layers, which made this
+      // one step crawl. Every path below closed it anyway.
+      document.getElementById('metaThreadScreen')?.classList.remove('open');
+      metaCurrentThreadKey = null; // stops the 2s thread poll on its next tick
       const stockNow = resumingStockReturn ? true : await customConfirm('Return this order to stock now?', {
         title: 'Back to stock?',
         confirmLabel: 'Return now',
@@ -24678,12 +24783,13 @@ const NOON_LOGO_SRC = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/6xaJSl
     const l = todoDoc.lists[0];
     if (!l) { el.innerHTML = '<div class="loading-status" style="padding:36px 0;">Nothing here yet.</div>'; return; }
     todoOpenListId = l.id;
+    initTodoLongPress();
     const tasks = [...(l.tasks || [])].sort((a, b) => (a.done ? 1 : 0) - (b.done ? 1 : 0) || String(a.remindAt || '9').localeCompare(String(b.remindAt || '9')));
     if (!tasks.length) { el.innerHTML = '<div style="padding:44px 0; text-align:center; color:rgba(255,255,255,0.55); font-size:13px;">Nothing here yet.</div>'; return; }
     el.innerHTML = tasks.map(t => {
       const late = !t.done && t.remindAt && new Date(t.remindAt) <= new Date();
       // A finished task recedes rather than disappears, so the glass stays legible either way.
-      return `<div style="display:flex; align-items:flex-start; gap:13px; padding:14px 15px; margin-bottom:9px; border-radius:16px; background:rgba(255,255,255,${t.done ? '0.07' : '0.12'}); backdrop-filter:blur(28px) saturate(190%); -webkit-backdrop-filter:blur(28px) saturate(190%); border:1px solid rgba(255,255,255,${t.done ? '0.14' : '0.2'}); box-shadow:0 6px 18px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.26);">
+      return `<div data-todo-id="${t.id}" style="display:flex; align-items:flex-start; gap:13px; padding:14px 15px; margin-bottom:9px; border-radius:16px; -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; background:rgba(255,255,255,${t.done ? '0.07' : '0.12'}); backdrop-filter:blur(28px) saturate(190%); -webkit-backdrop-filter:blur(28px) saturate(190%); border:1px solid rgba(255,255,255,${t.done ? '0.14' : '0.2'}); box-shadow:0 6px 18px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.26);">
         <button onclick="toggleTodoTask('${t.id}')" aria-label="Done" style="flex-shrink:0; width:25px; height:25px; margin-top:1px; border-radius:50%; border:2px solid rgba(255,255,255,${t.done ? '0.85' : '0.45'}); background:${t.done ? 'rgba(255,255,255,0.85)' : 'transparent'}; color:#4a5340; font-size:13px; font-weight:700; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center;">${t.done ? '✓' : ''}</button>
         <div style="flex:1; min-width:0;">
           <div style="font-size:14.5px; color:${t.done ? 'rgba(255,255,255,0.5)' : '#fff'}; text-decoration:${t.done ? 'line-through' : 'none'}; overflow-wrap:anywhere; line-height:1.45;">${t.text}</div>
@@ -24692,6 +24798,46 @@ const NOON_LOGO_SRC = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/6xaJSl
         <button onclick="deleteTodoTask('${t.id}')" aria-label="Delete" style="flex-shrink:0; background:none; border:none; color:rgba(255,255,255,0.45); font-size:17px; cursor:pointer; padding:0 2px;">×</button>
       </div>`;
     }).join('');
+  }
+  // Long-press a task to delete it. Bound once to the list container, so it keeps working
+  // through every re-render, and a press that turns into a scroll is not a delete.
+  let todoPressTimer = null, todoPressStart = null;
+  function initTodoLongPress() {
+    const wrap = document.getElementById('todoTasksWrap');
+    if (!wrap || wrap.dataset.longPressReady) return;
+    wrap.dataset.longPressReady = '1';
+    const cancel = () => { clearTimeout(todoPressTimer); todoPressTimer = null; todoPressStart = null; };
+    wrap.addEventListener('pointerdown', (e) => {
+      const card = e.target.closest('[data-todo-id]');
+      // A press on the checkbox, the reminder chip or the x belongs to that button.
+      if (!card || e.target.closest('button')) return;
+      const id = card.dataset.todoId;
+      todoPressStart = { x: e.clientX, y: e.clientY };
+      clearTimeout(todoPressTimer);
+      todoPressTimer = setTimeout(async () => {
+        // Cleared BEFORE the dialog opens. The finger is still down at this point, so the
+        // matching pointerup lands on the dialog, not on this list - leaving the press state
+        // and the card's captured pointer behind, which made the list feel stuck afterwards.
+        cancel();
+        try { if (card.hasPointerCapture?.(e.pointerId)) card.releasePointerCapture(e.pointerId); } catch (err) {}
+        try { navigator.vibrate && navigator.vibrate(18); } catch (err) {}
+        const hit = findTodoTask(id);
+        if (!await customConfirm(`Delete "${hit?.task?.text || 'this task'}"?`, { danger: true, confirmLabel: 'Delete' })) return;
+        deleteTodoTask(id);
+      }, 500);
+    });
+    // Scrolling the list must never delete anything, but a few pixels of thumb jitter is still a
+    // press - hence a threshold rather than cancelling on any movement at all.
+    wrap.addEventListener('pointermove', (e) => {
+      if (!todoPressStart) return;
+      if (Math.abs(e.clientX - todoPressStart.x) > 10 || Math.abs(e.clientY - todoPressStart.y) > 10) cancel();
+    });
+    // On window, not on the list: a finger lifted over the dialog (or anywhere else) has to clear
+    // the press just the same.
+    window.addEventListener('pointerup', cancel);
+    window.addEventListener('pointercancel', cancel);
+    // Stops Android's own text-selection menu appearing on top of the confirm.
+    wrap.addEventListener('contextmenu', (e) => { if (e.target.closest('[data-todo-id]')) e.preventDefault(); });
   }
   async function promptNewTodoList() {
     const name = await customPrompt('Name this list');
