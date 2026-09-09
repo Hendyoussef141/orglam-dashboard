@@ -1,46 +1,23 @@
 name: Deploy
 
-# Every push to main deploys everything: the worker, the dashboard bundled into it, and a fresh
-# signed Android build published to all the phones.
+# Every push to main builds, signs and publishes the Android app (dashboard included).
+#
+# The Cloudflare Worker is NOT deployed here on purpose. wrangler replaces a worker's variables
+# with whatever the repo declares, which wiped the plain-text ones set in the Cloudflare dashboard
+# (Shopify, Amazon, noon, Gmail, Firebase) and left every number in the app at zero. keep_vars did
+# not prevent it, and those values are encrypted - they cannot be read back out to re-declare them
+# here. So the worker keeps its manual deploy and this workflow does the slow part: the app.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 jobs:
-  worker:
-    name: Cloudflare Worker
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      # wrangler expects the entrypoint named in wrangler.toml (main = "worker.js"). The worker
-      # itself is kept under whichever readable name it already has in the repo, so both are
-      # accepted rather than forcing a rename.
-      - name: Stage the worker entrypoint
-        run: |
-          if [ -f "Orglam Worker.js" ]; then
-            cp "Orglam Worker.js" worker.js
-          elif [ -f "worker_84.txt" ]; then
-            cp worker_84.txt worker.js
-          else
-            echo "No worker source found (expected 'Orglam Worker.js' or 'worker_84.txt')."
-            exit 1
-          fi
-          node --check worker.js   # a syntax error must fail here, not half-way through a deploy
-
-      - name: Inject the KV namespace id
-        run: sed -i "s/PASTE_YOUR_KV_NAMESPACE_ID/${{ secrets.KV_NAMESPACE_ID }}/" wrangler.toml
-
-      - uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
+  # NOTE: the Cloudflare Worker is deliberately NOT deployed from here - see the comment above.
+  # It stays a manual paste-into-Cloudflare deploy, exactly as it was before.
   android:
     name: Android build + publish
     runs-on: ubuntu-latest
-    # Runs alongside the worker deploy rather than after it: the two are independent, and waiting
-    # added ~25s to every run for nothing.
     # Signing secrets are what make an installable build; without them this job would produce an
     # unsigned APK that no phone accepts, so it is skipped instead of failing every push.
     if: ${{ github.event_name == 'workflow_dispatch' || vars.BUILD_ANDROID == 'true' }}
