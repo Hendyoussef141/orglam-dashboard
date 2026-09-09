@@ -2,22 +2,42 @@ name: Deploy
 
 # Every push to main builds, signs and publishes the Android app (dashboard included).
 #
-# The Cloudflare Worker is NOT deployed here on purpose. wrangler replaces a worker's variables
-# with whatever the repo declares, which wiped the plain-text ones set in the Cloudflare dashboard
-# (Shopify, Amazon, noon, Gmail, Firebase) and left every number in the app at zero. keep_vars did
-# not prevent it, and those values are encrypted - they cannot be read back out to re-declare them
-# here. So the worker keeps its manual deploy and this workflow does the slow part: the app.
+# Deploying the worker used to wipe its plain-text variables (Shopify, Amazon, noon, Gmail,
+# Firebase) and zero every number in the app, because wrangler replaces variables with whatever
+# the repo declares. Every one of those values is now stored as a Cloudflare SECRET instead, and
+# secrets are left untouched by a deploy - which is what makes this safe to automate.
+# Never add plain-text variables to this worker in the Cloudflare dashboard; use secrets.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 jobs:
-  # NOTE: the Cloudflare Worker is deliberately NOT deployed from here - see the comment above.
-  # It stays a manual paste-into-Cloudflare deploy, exactly as it was before.
+  worker:
+    name: Cloudflare Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # wrangler expects the entrypoint named in wrangler.toml (main = "worker.js"); the file is
+      # kept under its readable name in the repo.
+      - name: Stage the worker entrypoint
+        run: |
+          cp "Orglam Worker.js" worker.js
+          node --check worker.js   # a syntax error must fail here, not half-way through a deploy
+
+      - name: Inject the KV namespace id
+        run: sed -i "s/PASTE_YOUR_KV_NAMESPACE_ID/${{ secrets.KV_NAMESPACE_ID }}/" wrangler.toml
+
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
   android:
     name: Android build + publish
     runs-on: ubuntu-latest
+    # Independent of the worker job on purpose - a worker-only push should not wait on anything.
     # Signing secrets are what make an installable build; without them this job would produce an
     # unsigned APK that no phone accepts, so it is skipped instead of failing every push.
     if: ${{ github.event_name == 'workflow_dispatch' || vars.BUILD_ANDROID == 'true' }}
